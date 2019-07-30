@@ -1,13 +1,11 @@
 import re
-from itertools import combinations
 from pathlib import Path
 
 import networkx as nx
 import numpy as np
 import pandas as pd
-from mlxtend.preprocessing import TransactionEncoder
 from mlxtend.frequent_patterns import apriori
-
+from mlxtend.preprocessing import TransactionEncoder
 
 from utils import analyze_url, read_graph
 
@@ -38,41 +36,11 @@ clusters = apriori(pd.DataFrame(te_ary, columns=te.columns_), min_support=2/len(
 
 
 def get_articles_for_cluster(cluster_refs):
-  print(articles.refs.apply(lambda r: cluster_refs in r))
+  return articles[[cluster_refs.issubset(r) for r in articles.refs]].index.tolist()
+
+clusters['articles'] = clusters.refs.apply(get_articles_for_cluster)
+clusters['length'] = clusters.articles.apply(len)
 
 
-
-# #all the combinations of references
-# def refs_to_clusters(refs, max_combinations=3):
-#     return [comb for c in range(max_combinations) for comb in combinations(refs, c+1)]
-
-# articles['clusters'] = articles.apply(lambda a: refs_to_clusters(a.refs), axis=1)
-
-# clusters = articles.clusters.apply(pd.Series) \
-#     .merge(articles[['clusters']], right_index = True, left_index = True) \
-#     .reset_index() \
-#     .drop(['clusters'], axis = 1) \
-#     .melt(id_vars = ['url'], value_name = 'clusters') \
-#     .drop('variable', axis = 1) \
-#     .dropna()
-
-# clusters = clusters.groupby('clusters').url.apply(list).to_frame()
-
-# clusters['length'] = clusters.url.apply(len)
-
-
-    # # add article to clusters
-    # def add_to_clusters(article, refs, clusters, max_combinations=3):
-        
-    #     for c in range(max_combinations):
-    #         for comb in combinations(refs, c+1):
-
-    #             if clusters.loc[clusters.refs == comb].empty:
-    #                 clusters = clusters.append({'refs':comb,'articles':[article]}, ignore_index=True)
-    #             else:
-    #                 clusters.loc[clusters.refs == comb, 'articles'] = clusters.loc[clusters.refs == comb, 'articles'] + [article]
-
-
-  
     
   #  return clusters
