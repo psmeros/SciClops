@@ -14,6 +14,8 @@ from utils import analyze_url, read_graph
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/Dropbox/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/Dropbox/sciclops/'
+
+low_memory = True
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -26,10 +28,19 @@ G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
 articles['refs'] = articles.url.apply(lambda u: set(G[u]))
 articles = articles.set_index('url')
 
+blacklist_refs  = set(open(sciclops_dir + 'blacklist/sources.txt').read().splitlines())
+articles['refs'] = articles.refs.apply(lambda r: r - blacklist_refs)
+
 te = TransactionEncoder()
 te_ary = te.fit_transform(articles['refs'])
 
-clusters = apriori(pd.DataFrame(te_ary, columns=te.columns_), min_support=2/len(articles), use_colnames=True)
+clusters = apriori(pd.DataFrame(te_ary, columns=te.columns_), min_support=2/len(articles), use_colnames=True, low_memory=low_memory).rename(columns={'itemsets':'refs'})
+
+
+def get_articles_for_cluster(cluster_refs):
+  print(articles.refs.apply(lambda r: cluster_refs in r))
+
+
 
 # #all the combinations of references
 # def refs_to_clusters(refs, max_combinations=3):
