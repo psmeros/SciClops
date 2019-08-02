@@ -1,14 +1,6 @@
 from urllib.parse import urlsplit
 import re
 
-import networkx as nx
-import pandas as pd
-
-
-#Read diffusion graph
-def read_graph(graph_file):
-    return nx.from_pandas_edgelist(pd.read_csv(graph_file, sep='\t', header=None), 0, 1, create_using=nx.DiGraph())
-
 
 #Find the domain and the path of an http url
 def analyze_url(url):
@@ -19,3 +11,16 @@ def analyze_url(url):
         return domain, path
     except:
         return url, ''
+
+# DEPRECATED
+# def apriori_clustering():
+#   te = TransactionEncoder()
+#   te_ary = te.fit_transform(articles['refs'])
+
+#   clusters = apriori(pd.DataFrame(te_ary, columns=te.columns_), min_support=2/len(articles), use_colnames=True, low_memory=True).rename(columns={'itemsets':'refs'})
+
+#   def get_articles_for_cluster(cluster_refs):
+#     return articles[[cluster_refs.issubset(r) for r in articles.refs]].index.tolist()
+
+#   clusters['articles'] = clusters.refs.apply(get_articles_for_cluster)
+#   clusters['length'] = clusters.articles.apply(len)
