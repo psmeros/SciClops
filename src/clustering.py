@@ -7,6 +7,7 @@ import pandas as pd
 import spacy
 import torch
 import torch.nn as nn
+from pandarallel import pandarallel
 from sklearn.preprocessing import MultiLabelBinarizer
 from torch.autograd import Variable
 from torch.nn import init
@@ -44,17 +45,19 @@ def data_preprocessing():
 		papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec.tsv', sep='\t', index_col='url')
 
 	else:
+		pandarallel.initialize()
+		
 		articles = pd.read_csv(scilens_dir + 'article_details_v2.tsv.bz2', sep='\t')
 		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t')
 		G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
-		articles['refs'] = articles.url.apply(lambda u: set(G[u]))
+		articles['refs'] = articles.url.parallel_apply(lambda u: set(G[u]))
 		articles = articles.set_index('url')
 		papers = papers.set_index('url')
 
 		#cleaning
 		print('cleaning...')
 		blacklist_refs  = set(open(sciclops_dir + 'blacklist/sources.txt').read().splitlines())
-		articles['refs'] = articles.refs.apply(lambda r: (r - blacklist_refs).intersection(set(papers.index.to_list())))
+		articles['refs'] = articles.refs.parallel_apply(lambda r: (r - blacklist_refs).intersection(set(papers.index.to_list())))
 		mlb = MultiLabelBinarizer()
 		cooc = pd.DataFrame(mlb.fit_transform(articles.refs), columns=mlb.classes_, index=articles.index)
 		papers = papers[papers.index.isin(list(cooc.columns))]
@@ -64,17 +67,17 @@ def data_preprocessing():
 		papers.full_text = papers.full_text.astype(str)
 		
 		print('vectorizing...')
-		articles_vec = articles.apply(lambda x: nlp(x['title'] + ' ' + x['full_text']).vector , axis=1).apply(pd.Series)
-		papers_vec = papers.apply(lambda x: nlp(x['title'] + ' ' + x['full_text']).vector , axis=1).apply(pd.Series)
+		articles_vec = articles.parallel_apply(lambda x: nlp(x['title'] + ' ' + x['full_text']).vector , axis=1).apply(pd.Series)
+		papers_vec = papers.parallel_apply(lambda x: nlp(x['title'] + ' ' + x['full_text']).vector , axis=1).apply(pd.Series)
 
 		#caching    
 		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv', sep='\t')
 		articles_vec.to_csv(sciclops_dir + 'cache/articles_vec.tsv', sep='\t')
 		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec.tsv', sep='\t')
 	
-	cooc = torch.Tensor(cooc.values.astype('int8'))
-	articles_vec = torch.Tensor(articles_vec.values.astype('float32'))
-	papers_vec = torch.Tensor(papers_vec.values.astype('float32'))
+	cooc = torch.Tensor(cooc.values.astype(int))
+	articles_vec = torch.Tensor(articles_vec.values.astype(float))
+	papers_vec = torch.Tensor(papers_vec.values.astype(float))
 	
 	return cooc, articles_vec, papers_vec
 
