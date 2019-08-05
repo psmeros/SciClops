@@ -19,7 +19,7 @@ sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
 nlp = spacy.load("en_core_sci_md")
 
-use_cache = True
+use_cache = False
 
 # Hyper Parameters
 num_epochs = 60
@@ -58,7 +58,11 @@ def data_preprocessing():
 		mlb = MultiLabelBinarizer()
 		cooc = pd.DataFrame(mlb.fit_transform(articles.refs), columns=mlb.classes_, index=articles.index)
 		papers = papers[papers.index.isin(list(cooc.columns))]
-
+		articles.title = articles.title.astype(str)
+		articles.full_text = articles.full_text.astype(str)
+		papers.title = papers.title.astype(str)
+		papers.full_text = papers.full_text.astype(str)
+		
 		print('vectorizing...')
 		articles_vec = articles.apply(lambda x: nlp(x['title'] + ' ' + x['full_text']).vector , axis=1).apply(pd.Series)
 		papers_vec = papers.apply(lambda x: nlp(x['title'] + ' ' + x['full_text']).vector , axis=1).apply(pd.Series)
@@ -68,7 +72,7 @@ def data_preprocessing():
 		articles_vec.to_csv(sciclops_dir + 'cache/articles_vec.tsv', sep='\t')
 		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec.tsv', sep='\t')
 	
-	cooc = torch.Tensor(cooc.values.astype('uint8'))
+	cooc = torch.Tensor(cooc.values.astype('int8'))
 	articles_vec = torch.Tensor(articles_vec.values.astype('float32'))
 	papers_vec = torch.Tensor(papers_vec.values.astype('float32'))
 	
