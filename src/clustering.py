@@ -21,15 +21,6 @@ sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
 nlp = spacy.load("en_core_sci_md")
 
-# Hyper Parameters
-num_epochs = 100
-learning_rate = 1.e-6
-weight_decay = 0.0
-
-hard_clustering = False
-num_clusters = 50
-linear_comb = 0.6
-
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -87,6 +78,17 @@ def data_preprocessing(use_cache=True):
 
 cooc, articles_vec, papers_vec = data_preprocessing()
 
+# Hyper Parameters
+num_epochs = 50
+learning_rate = 1.e-6
+weight_decay = 1.e-5
+
+hard_clustering_articles = True
+hard_clustering_papers = False
+num_clusters = 10
+linear_comb = 0.6
+hidden_layers = 100
+
 class ClusterNet(nn.Module):
 	def __init__(self, num_clusters, num_articles, num_papers, embeddings_dim=200):
 		super(ClusterNet, self).__init__()
@@ -97,32 +99,33 @@ class ClusterNet(nn.Module):
 		self.avg_articles_per_cluster = self.num_articles/self.num_clusters
 		self.avg_papers_per_cluster = self.num_papers/self.num_clusters
 
-		self.linear_a = nn.Sequential(
-        	nn.Linear(embeddings_dim, num_clusters),
-			nn.BatchNorm1d(num_clusters),
+		self.linear_2_level = nn.Sequential(
+        	nn.Linear(embeddings_dim, hidden_layers),
+			nn.BatchNorm1d(hidden_layers),
+			nn.ReLU(),
+			nn.Linear(hidden_layers, num_clusters),
+			nn.Softmax(dim=1)
         )
-		self.linear_p = nn.Sequential(
+		self.linear_1_level = nn.Sequential(
         	nn.Linear(embeddings_dim, num_clusters),
-			nn.BatchNorm1d(num_clusters),
+			#nn.BatchNorm1d(num_clusters),
+			nn.Softmax(dim=1)
         )
 
-	def forward(self, articles, papers):
-		A = self.linear_a(articles)
-		P = self.linear_p(papers)
-
-		A = gumbel_softmax(A, hard=hard_clustering)
-		P = gumbel_softmax(P, hard=hard_clustering)
-		return A, P
+	def forward(self, articles, papers, cooc):
+		A = self.linear_1_level(articles)
+		P = self.linear_1_level(papers)
+		C = cooc
+		return A, P, C
 	
 
-	def loss(self, A, P, cooc):
-		D = A.t() @ cooc @ P
-		cluster_spread_loss = torch.sum(torch.tril(D, diagonal=-1)) + torch.sum(torch.triu(D, diagonal=1))
+	def loss(self, A, P, C):
+		D = A.t() @ C @ P
 
-		balance_loss_a = torch.sum((torch.sum(A, dim=0) - self.avg_articles_per_cluster)**2)
-		balance_loss_p = torch.sum((torch.sum(P, dim=0) - self.avg_papers_per_cluster)**2)
-		balance_loss = (balance_loss_a + balance_loss_p)/2.0
+		cluster_spread_loss = torch.sum(torch.sum(torch.tril(D, diagonal=-1), dim=0) + torch.sum(torch.triu(D, diagonal=1), dim=0))
+		balance_loss = torch.sum((torch.sum(A, dim=0) - self.avg_articles_per_cluster)**2)
 		
+		#print(cluster_spread_loss, balance_loss)
 		return linear_comb * cluster_spread_loss + (1-linear_comb) * balance_loss
 		
 
@@ -132,8 +135,14 @@ optimizer = SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
 for epoch in range(num_epochs):    
 	optimizer.zero_grad()
-	A, P = model(articles_vec, papers_vec)
-	loss = model.loss(A, P, cooc)
-	print(loss.data.item()/(num_clusters**2))
+	A, P, C = model(articles_vec, papers_vec, cooc)
+	loss = model.loss(A, P, C)
+	print(loss.data.item())
 	loss.backward()
 	optimizer.step()
+
+
+
+
+articles = pd.read_csv(scilens_dir + 'article_details_v2.tsv.bz2', sep='\t')
+[u for u in pd.DataFrame(A[:,5].data.tolist()).nlargest(5, 0).join(articles)['url']]
