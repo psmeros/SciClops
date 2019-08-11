@@ -9,6 +9,8 @@ import spacy
 import torch
 import torch.nn as nn
 from pandarallel import pandarallel
+from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import MultiLabelBinarizer
 from torch.autograd import Variable
 from torch.nn import init
@@ -32,8 +34,8 @@ def read_graph(graph_file):
 
 def data_preprocessing(representation, passage, use_cache=True):
 	'''
-	representation: bow, embeddings, bow_embeddings
-	passage: title, prelude, full_text
+	:param representation: bow, embeddings, bow_embeddings
+	:param passage: title, prelude, full_text
 	'''
 	if use_cache:
 		cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col='url')
@@ -42,6 +44,7 @@ def data_preprocessing(representation, passage, use_cache=True):
 
 	else:
 		pandarallel.initialize()
+		representation_dim = 200
 		
 		articles = pd.read_csv(scilens_dir + 'article_details_v2.tsv.bz2', sep='\t')
 		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t')
@@ -52,7 +55,7 @@ def data_preprocessing(representation, passage, use_cache=True):
 
 		#cleaning
 		print('cleaning...')
-		blacklist_refs  = set(open(sciclops_dir + 'blacklist/sources.txt').read().splitlines())
+		blacklist_refs  = set(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
 		articles['refs'] = articles.refs.parallel_apply(lambda r: (r - blacklist_refs).intersection(set(papers.index.to_list())))
 		mlb = MultiLabelBinarizer()
 		cooc = pd.DataFrame(mlb.fit_transform(articles.refs), columns=mlb.classes_, index=articles.index)
@@ -72,9 +75,20 @@ def data_preprocessing(representation, passage, use_cache=True):
 		elif passage == 'full_text':
 			articles_text = articles.title + ' ' + articles.full_text
 			papers_text = papers.title + ' ' + papers.full_text
+		
+		if representation == 'embeddings':
+			articles_vec = articles_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+			papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+		elif representation == 'bow':
+			hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
+			vectorizer = TfidfVectorizer(vocabulary=hn_vocabulary).fit(articles_text).fit(papers_text)
+			articles_vec = vectorizer.transform(articles_text)
+			papers_vec = vectorizer.transform(papers_text)
+			PCA = TruncatedSVD(representation_dim).fit(articles_vec).fit(papers_vec)
+			articles_vec = pd.DataFrame(PCA.transform(articles_vec), index=articles.index)
+			papers_vec = pd.DataFrame(PCA.transform(papers_vec), index=papers.index)
+		#elif representation == 'LDA':
 
-		articles_vec = articles_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
-		papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 
 		#caching    
 		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
@@ -90,21 +104,18 @@ def data_preprocessing(representation, passage, use_cache=True):
 
 ############################### ######### ###############################
 
-cooc, articles_vec, papers_vec = data_preprocessing()
+cooc, articles_vec, papers_vec = data_preprocessing('embeddings', 'prelude')
 
 # Hyper Parameters
-num_epochs = 50
+num_epochs = 20
 learning_rate = 1.e-6
-weight_decay = 1.e-5
+weight_decay = 0.0
 
-hard_clustering_articles = True
-hard_clustering_papers = False
-num_clusters = 10
-linear_comb = 0.6
-hidden_layers = 100
+num_clusters = 2
+linear_comb = 1
 
 class ClusterNet(nn.Module):
-	def __init__(self, num_clusters, num_articles, num_papers, embeddings_dim=200):
+	def __init__(self, num_clusters, num_articles, num_papers, embeddings_dim):
 		super(ClusterNet, self).__init__()
 
 		self.num_articles = num_articles
@@ -113,30 +124,34 @@ class ClusterNet(nn.Module):
 		self.avg_articles_per_cluster = self.num_articles/self.num_clusters
 		self.avg_papers_per_cluster = self.num_papers/self.num_clusters
 
-		self.linear_2_level = nn.Sequential(
-        	nn.Linear(embeddings_dim, hidden_layers),
-			nn.BatchNorm1d(hidden_layers),
-			nn.ReLU(),
-			nn.Linear(hidden_layers, num_clusters),
+		self.articlesNet = nn.Sequential(
+        	nn.Linear(embeddings_dim, num_clusters),
 			nn.Softmax(dim=1)
         )
-		self.linear_1_level = nn.Sequential(
+		self.papersNet = nn.Sequential(
         	nn.Linear(embeddings_dim, num_clusters),
-			#nn.BatchNorm1d(num_clusters),
+			nn.Softmax(dim=1)
+		)
+		
+		self.coocNet = nn.Sequential(
+        	nn.Linear(num_papers, num_papers),
 			nn.Softmax(dim=1)
         )
 
 	def forward(self, articles, papers, cooc):
-		A = self.linear_1_level(articles)
-		P = self.linear_1_level(papers)
-		C = cooc
+		A = self.articlesNet(articles)
+		P = self.papersNet(papers)
+		C = self.coocNet(cooc)
 		return A, P, C
 	
 
 	def loss(self, A, P, C):
 		D = A.t() @ C @ P
 
-		cluster_spread_loss = torch.sum(torch.sum(torch.tril(D, diagonal=-1), dim=0) + torch.sum(torch.triu(D, diagonal=1), dim=0))
+		print(D)
+		print(C)
+		cluster_spread_loss = torch.sum(torch.tril(D, diagonal=-1)) + torch.sum(torch.triu(D, diagonal=1))
+		print(cluster_spread_loss)
 		balance_loss = torch.sum((torch.sum(A, dim=0) - self.avg_articles_per_cluster)**2)
 		
 		#print(cluster_spread_loss, balance_loss)
@@ -144,7 +159,7 @@ class ClusterNet(nn.Module):
 		
 
 #Model training
-model = ClusterNet(num_clusters, len(articles_vec), len(papers_vec))
+model = ClusterNet(num_clusters, len(articles_vec), len(papers_vec), articles_vec.shape[1])
 optimizer = SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
 
 for epoch in range(num_epochs):    
@@ -158,5 +173,5 @@ for epoch in range(num_epochs):
 
 
 
-articles = pd.read_csv(scilens_dir + 'article_details_v2.tsv.bz2', sep='\t')
-[u for u in pd.DataFrame(A[:,5].data.tolist()).nlargest(5, 0).join(articles)['url']]
+#articles = pd.read_csv(scilens_dir + 'article_details_v2.tsv.bz2', sep='\t')
+#[u for u in pd.DataFrame(A[:,5].data.tolist()).nlargest(5, 0).join(articles)['url']]
