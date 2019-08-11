@@ -30,11 +30,15 @@ def read_graph(graph_file):
 		return nx.from_pandas_edgelist(pd.read_csv(graph_file, sep='\t', header=None), 0, 1, create_using=nx.DiGraph())
 
 
-def data_preprocessing(use_cache=True):
+def data_preprocessing(representation, passage, use_cache=True):
+	'''
+	representation: bow, embeddings, bow_embeddings
+	passage: title, prelude, full_text
+	'''
 	if use_cache:
 		cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col='url')
-		articles_vec = pd.read_csv(sciclops_dir + 'cache/articles_vec.tsv.bz2', sep='\t', index_col='url')
-		papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec.tsv.bz2', sep='\t', index_col='url')
+		articles_vec = pd.read_csv(sciclops_dir + 'cache/articles_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t', index_col='url')
+		papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t', index_col='url')
 
 	else:
 		pandarallel.initialize()
@@ -59,13 +63,23 @@ def data_preprocessing(use_cache=True):
 		papers.full_text = papers.full_text.astype(str)
 		
 		print('vectorizing...')
-		articles_vec = articles.parallel_apply(lambda x: nlp(x['title'] + ' ' + x['full_text']).vector , axis=1).apply(pd.Series)
-		papers_vec = papers.parallel_apply(lambda x: nlp(x['title'] + ' ' + x['full_text']).vector , axis=1).apply(pd.Series)
+		if passage == 'title':
+			articles_text = articles.title
+			papers_text = papers.title
+		elif passage == 'prelude':
+			articles_text = articles.title + ' ' + articles.full_text.apply(lambda w: w.split('\n')[0])
+			papers_text = papers.title + ' ' + papers.full_text.apply(lambda w: w.split('\n')[0])
+		elif passage == 'full_text':
+			articles_text = articles.title + ' ' + articles.full_text
+			papers_text = papers.title + ' ' + papers.full_text
+
+		articles_vec = articles_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+		papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 
 		#caching    
-		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv', sep='\t')
-		articles_vec.to_csv(sciclops_dir + 'cache/articles_vec.tsv', sep='\t')
-		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec.tsv', sep='\t')
+		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
+		articles_vec.to_csv(sciclops_dir + 'cache/articles_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t')
+		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t')
 	
 	cooc = torch.Tensor(cooc.values.astype(float))
 	articles_vec = torch.Tensor(articles_vec.values.astype(float))
