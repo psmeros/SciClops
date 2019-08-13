@@ -89,11 +89,13 @@ def data_preprocessing(representation, passage, use_cache=True):
 			papers_vec = pd.DataFrame(PCA.transform(papers_vec), index=papers.index)
 		elif representation == 'bow_embeddings':
 			hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
-			articles_text = articles_text.apply(lambda t: ' '.join([(w + ' ')*t.count(w) for w in hn_vocabulary]))
-			papers_text = papers_text.apply(lambda t: ' '.join([(w + ' ')*t.count(w) for w in hn_vocabulary]))
+			#articles_text = articles_text.apply(lambda t: ' '.join([(w + ' ')*t.count(w) for w in hn_vocabulary]))
+			#papers_text = papers_text.apply(lambda t: ' '.join([(w + ' ')*t.count(w) for w in hn_vocabulary]))
+			articles_text = articles_text.apply(lambda t: ' '.join([w for w in hn_vocabulary if w in t]))
+			papers_text = papers_text.apply(lambda t: ' '.join([w for w in hn_vocabulary if w in t]))
 			articles_vec = articles_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 			papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
-			
+
 		#caching    
 		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
 		articles_vec.to_csv(sciclops_dir + 'cache/articles_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t')
@@ -108,68 +110,65 @@ def data_preprocessing(representation, passage, use_cache=True):
 
 ############################### ######### ###############################
 
-cooc, articles_vec, papers_vec = data_preprocessing('embeddings', 'prelude')
+cooc, articles_vec, papers_vec = data_preprocessing('bow_embeddings', 'prelude')
 
 # Hyper Parameters
-num_epochs = 20
+num_epochs = 100
 learning_rate = 1.e-6
 weight_decay = 0.0
 
-num_clusters = 2
-linear_comb = 1
+num_clusters = 10
+linear_comb = .85
 
 class ClusterNet(nn.Module):
-	def __init__(self, num_clusters, num_articles, num_papers, embeddings_dim):
+	def __init__(self, num_clusters, cooc, embeddings_dim):
 		super(ClusterNet, self).__init__()
 
-		self.num_articles = num_articles
-		self.num_papers = num_papers
 		self.num_clusters = num_clusters
-		self.avg_articles_per_cluster = self.num_articles/self.num_clusters
-		self.avg_papers_per_cluster = self.num_papers/self.num_clusters
+		self.cooc = cooc
 
 		self.articlesNet = nn.Sequential(
-        	nn.Linear(embeddings_dim, num_clusters),
+			nn.Linear(embeddings_dim, num_clusters),
+			nn.BatchNorm1d(num_clusters),
 			nn.Softmax(dim=1)
         )
 		self.papersNet = nn.Sequential(
-        	nn.Linear(embeddings_dim, num_clusters),
+			nn.Linear(embeddings_dim, num_clusters),
+			nn.BatchNorm1d(num_clusters),
 			nn.Softmax(dim=1)
 		)
 		
-		self.coocNet = nn.Sequential(
-        	nn.Linear(num_papers, num_papers),
-			nn.Softmax(dim=1)
-        )
-
-	def forward(self, articles, papers, cooc):
+	def forward(self, articles, papers):
 		A = self.articlesNet(articles)
 		P = self.papersNet(papers)
-		C = self.coocNet(cooc)
-		return A, P, C
+		return A, P
 	
 
-	def loss(self, A, P, C):
-		D = A.t() @ C @ P
+	def loss(self, A, P):
+		D = A.t() @ self.cooc @ P
 
-		print(D)
-		print(C)
-		cluster_spread_loss = torch.sum(torch.tril(D, diagonal=-1)) + torch.sum(torch.triu(D, diagonal=1))
-		print(cluster_spread_loss)
-		balance_loss = torch.sum((torch.sum(A, dim=0) - self.avg_articles_per_cluster)**2)
-		
+		#print(D)
+		cluster_spread_loss = torch.sum(torch.sum(torch.tril(D, diagonal=-1), dim=0) + torch.sum(torch.triu(D, diagonal=1), dim=0))
+		#print('cluster loss',cluster_spread_loss)
+		#diag = torch.diagonal(D)
+		#balance_loss = diag.max() - diag.min()
+
+		balance_loss = torch.sum(torch.abs((torch.diagonal(D, 0, dim1=-2, dim2=-1) - torch.sum(torch.diagonal(D, 0, dim1=-2, dim2=-1), dim=0).unsqueeze(dim=0).repeat(1, self.num_clusters)/self.num_clusters))**2)
+
+
+		#print('balance loss',balance_loss)
 		#print(cluster_spread_loss, balance_loss)
 		return linear_comb * cluster_spread_loss + (1-linear_comb) * balance_loss
 		
 
 #Model training
-model = ClusterNet(num_clusters, len(articles_vec), len(papers_vec), articles_vec.shape[1])
+model = ClusterNet(num_clusters, cooc, articles_vec.shape[1])
 optimizer = SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
 
 for epoch in range(num_epochs):    
 	optimizer.zero_grad()
-	A, P, C = model(articles_vec, papers_vec, cooc)
-	loss = model.loss(A, P, C)
+	A, P = model(articles_vec, papers_vec)
+	loss = model.loss(A, P)
 	print(loss.data.item())
 	loss.backward()
 	optimizer.step()
