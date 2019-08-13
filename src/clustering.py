@@ -87,9 +87,13 @@ def data_preprocessing(representation, passage, use_cache=True):
 			PCA = TruncatedSVD(representation_dim).fit(articles_vec).fit(papers_vec)
 			articles_vec = pd.DataFrame(PCA.transform(articles_vec), index=articles.index)
 			papers_vec = pd.DataFrame(PCA.transform(papers_vec), index=papers.index)
-		#elif representation == 'LDA':
-
-
+		elif representation == 'bow_embeddings':
+			hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
+			articles_text = articles_text.apply(lambda t: ' '.join([(w + ' ')*t.count(w) for w in hn_vocabulary]))
+			papers_text = papers_text.apply(lambda t: ' '.join([(w + ' ')*t.count(w) for w in hn_vocabulary]))
+			articles_vec = articles_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+			papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+			
 		#caching    
 		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
 		articles_vec.to_csv(sciclops_dir + 'cache/articles_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t')
