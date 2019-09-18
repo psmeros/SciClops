@@ -46,7 +46,7 @@ def data_preprocessing(representation, passage, use_cache=True):
 		pandarallel.initialize()
 		representation_dim = 200
 		
-		articles = pd.read_csv(scilens_dir + 'article_details_v2.tsv.bz2', sep='\t')
+		articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
 		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t')
 		G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
 		articles['refs'] = articles.url.parallel_apply(lambda u: set(G[u]))
