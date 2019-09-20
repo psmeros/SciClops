@@ -33,5 +33,13 @@ def keyphrase_extraction(text, n=10):
 
 pandarallel.initialize()
 
-articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
-articles['keyphrases'] = articles.apply(lambda a: keyphrase_extraction(str(a.title) + ' ' + str(a.full_text)), axis=1)
+def extract_keyphrases():
+	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
+	articles['keyphrases'] = articles.apply(lambda a: keyphrase_extraction(str(a.title) + ' ' + str(a.full_text)), axis=1)
+	articles.to_csv(scilens_dir + 'article_details_v4.tsv.bz2', sep='\t', index=False)
+
+
+ght = list(pd.read_csv(sciclops_dir + 'small_files/global_health_threats/ght.tsv', sep='\t').Keywords)
+
+
+articles[''] = articles[:3].keyphrases.apply(lambda l: set([kph for sl in [k.split() for (k, _) in eval(l)] for kph in sl if kph in ght]))
