@@ -36,10 +36,13 @@ pandarallel.initialize()
 def extract_keyphrases():
 	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
 	articles['keyphrases'] = articles.apply(lambda a: keyphrase_extraction(str(a.title) + ' ' + str(a.full_text)), axis=1)
+
+	ght = [l.strip() for e in list(pd.read_csv(sciclops_dir + 'small_files/global_health_threats/ght.tsv', sep='\t').Keywords) for l in e.split('|')]
+	articles['partition'] = articles.keyphrases.apply(lambda l: set([kph for sl in [k.split() for (k, _) in l] for kph in sl if kph in ght]))
 	articles.to_csv(scilens_dir + 'article_details_v4.tsv.bz2', sep='\t', index=False)
 
 
-ght = list(pd.read_csv(sciclops_dir + 'small_files/global_health_threats/ght.tsv', sep='\t').Keywords)
-
-
-articles[''] = articles[:3].keyphrases.apply(lambda l: set([kph for sl in [k.split() for (k, _) in eval(l)] for kph in sl if kph in ght]))
+def filter_partitions(keyphrase):
+	articles = pd.read_csv(scilens_dir + 'article_details_v4.tsv.bz2', sep='\t')
+	articles = articles[articles['partition'].apply(lambda s: keyphrase in s)]
+	articles.to_csv(sciclops_dir + keyphrase + '_articles.tsv.bz2', sep='\t', index=False)

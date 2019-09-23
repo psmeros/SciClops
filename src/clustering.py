@@ -22,7 +22,7 @@ scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
 nlp = spacy.load("en_core_sci_md")
-
+hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -32,85 +32,90 @@ def read_graph(graph_file):
 		return nx.from_pandas_edgelist(pd.read_csv(graph_file, sep='\t', header=None), 0, 1, create_using=nx.DiGraph())
 
 
-def data_preprocessing(representation, passage, use_cache=True):
+def data_preprocessing(representation, partition='cancer', passage='prelude', use_cache=True):
 	'''
 	:param representation: bow, embeddings, bow_embeddings
-	:param passage: title, prelude, full_text
+	:param partition: article topic e.g., cancer
+	:param passage: title, prelude, full_text (filter for paper text)
 	'''
 	if use_cache:
 		cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col='url')
-		articles_vec = pd.read_csv(sciclops_dir + 'cache/articles_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t', index_col='url')
+		claim_vec = pd.read_csv(sciclops_dir + 'cache/claim_vec_'+representation+'.tsv.bz2', sep='\t', index_col='url')
 		papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t', index_col='url')
 
 	else:
 		pandarallel.initialize()
 		representation_dim = 200
 		
-		articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
+
+		articles = pd.read_csv(sciclops_dir + 'cache/'+partition+'_articles.tsv.bz2', sep='\t')
+		claims = articles[['url', 'quotes']]
+
+		claims = claims.quotes.apply(lambda l: pd.Series( list(map(lambda d: d['quote'], eval(l))))) \
+										.merge(claims, right_index = True, left_index = True) \
+										.drop(['quotes'], axis = 1) \
+										.melt(id_vars = ['url'], value_name = 'claim') \
+										.drop("variable", axis = 1) \
+										.dropna(subset=['claim'])
+
 		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t')
 		G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
-		articles['refs'] = articles.url.parallel_apply(lambda u: set(G[u]))
-		articles = articles.set_index('url')
+		claims['refs'] = claims.url.parallel_apply(lambda u: set(G[u]))
+		claims = claims.set_index('url')
 		papers = papers.set_index('url')
 
 		#cleaning
 		print('cleaning...')
 		blacklist_refs  = set(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
-		articles['refs'] = articles.refs.parallel_apply(lambda r: (r - blacklist_refs).intersection(set(papers.index.to_list())))
+		claims['refs'] = claims.refs.parallel_apply(lambda r: (r - blacklist_refs).intersection(set(papers.index.to_list())))
 		mlb = MultiLabelBinarizer()
-		cooc = pd.DataFrame(mlb.fit_transform(articles.refs), columns=mlb.classes_, index=articles.index)
+		cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
 		papers = papers[papers.index.isin(list(cooc.columns))]
-		articles.title = articles.title.astype(str)
-		articles.full_text = articles.full_text.astype(str)
+		claims.claim = claims.claim.astype(str)
 		papers.title = papers.title.astype(str)
 		papers.full_text = papers.full_text.astype(str)
 		
 		print('vectorizing...')
 		if passage == 'title':
-			articles_text = articles.title
 			papers_text = papers.title
 		elif passage == 'prelude':
-			articles_text = articles.title + ' ' + articles.full_text.apply(lambda w: w.split('\n')[0])
 			papers_text = papers.title + ' ' + papers.full_text.apply(lambda w: w.split('\n')[0])
 		elif passage == 'full_text':
-			articles_text = articles.title + ' ' + articles.full_text
 			papers_text = papers.title + ' ' + papers.full_text
-		
+
+		claim_text = claims.claim
+
 		if representation == 'embeddings':
-			articles_vec = articles_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+			claim_vec = claim_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 			papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 		elif representation == 'bow':
-			hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
-			vectorizer = TfidfVectorizer(vocabulary=hn_vocabulary).fit(articles_text).fit(papers_text)
-			articles_vec = vectorizer.transform(articles_text)
+			vectorizer = TfidfVectorizer(vocabulary=hn_vocabulary).fit(claim_text).fit(papers_text)
+			claim_vec = vectorizer.transform(claim_text)
 			papers_vec = vectorizer.transform(papers_text)
-			PCA = TruncatedSVD(representation_dim).fit(articles_vec).fit(papers_vec)
-			articles_vec = pd.DataFrame(PCA.transform(articles_vec), index=articles.index)
+			PCA = TruncatedSVD(representation_dim).fit(claim_vec).fit(papers_vec)
+			claim_vec = pd.DataFrame(PCA.transform(claim_vec), index=articles.index)
 			papers_vec = pd.DataFrame(PCA.transform(papers_vec), index=papers.index)
 		elif representation == 'bow_embeddings':
-			hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
-			#articles_text = articles_text.apply(lambda t: ' '.join([(w + ' ')*t.count(w) for w in hn_vocabulary]))
-			#papers_text = papers_text.apply(lambda t: ' '.join([(w + ' ')*t.count(w) for w in hn_vocabulary]))
-			articles_text = articles_text.apply(lambda t: ' '.join([w for w in hn_vocabulary if w in t]))
+			claim_text = claim_text.apply(lambda t: ' '.join([w for w in hn_vocabulary if w in t]))
 			papers_text = papers_text.apply(lambda t: ' '.join([w for w in hn_vocabulary if w in t]))
-			articles_vec = articles_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+			claim_vec = claim_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 			papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 
 		#caching    
 		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
-		articles_vec.to_csv(sciclops_dir + 'cache/articles_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t')
+		claim_vec.to_csv(sciclops_dir + 'cache/claim_vec_'+representation+'.tsv.bz2', sep='\t')
 		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t')
 	
 	cooc = torch.Tensor(cooc.values.astype(float))
-	articles_vec = torch.Tensor(articles_vec.values.astype(float))
+	claim_vec = torch.Tensor(claim_vec.values.astype(float))
 	papers_vec = torch.Tensor(papers_vec.values.astype(float))
 	
-	return cooc, articles_vec, papers_vec
+	return cooc, claim_vec, papers_vec
 
 
 ############################### ######### ###############################
 
-cooc, articles_vec, papers_vec = data_preprocessing('bow_embeddings', 'prelude')
+cooc, claim_vec, papers_vec = data_preprocessing('bow_embeddings')
 
 # Hyper Parameters
 num_epochs = 100
@@ -127,7 +132,7 @@ class ClusterNet(nn.Module):
 		self.num_clusters = num_clusters
 		self.cooc = cooc
 
-		self.articlesNet = nn.Sequential(
+		self.claimsNet = nn.Sequential(
 			nn.Linear(embeddings_dim, num_clusters),
 			nn.BatchNorm1d(num_clusters),
 			nn.Softmax(dim=1)
@@ -138,8 +143,8 @@ class ClusterNet(nn.Module):
 			nn.Softmax(dim=1)
 		)
 		
-	def forward(self, articles, papers):
-		A = self.articlesNet(articles)
+	def forward(self, claims, papers):
+		A = self.claimsNet(claims)
 		P = self.papersNet(papers)
 		return A, P
 	
@@ -162,12 +167,12 @@ class ClusterNet(nn.Module):
 		
 
 #Model training
-model = ClusterNet(num_clusters, cooc, articles_vec.shape[1])
+model = ClusterNet(num_clusters, cooc, claim_vec.shape[1])
 optimizer = SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
 
 for epoch in range(num_epochs):    
 	optimizer.zero_grad()
-	A, P = model(articles_vec, papers_vec)
+	A, P = model(claim_vec, papers_vec)
 	loss = model.loss(A, P)
 	print(loss.data.item())
 	loss.backward()
@@ -176,5 +181,5 @@ for epoch in range(num_epochs):
 
 
 
-#articles = pd.read_csv(scilens_dir + 'article_details_v2.tsv.bz2', sep='\t')
-#[u for u in pd.DataFrame(A[:,5].data.tolist()).nlargest(5, 0).join(articles)['url']]
+#claims = pd.read_csv(scilens_dir + 'article_details_v2.tsv.bz2', sep='\t')
+#[u for u in pd.DataFrame(A[:,5].data.tolist()).nlargest(5, 0).join(claims)['url']]
