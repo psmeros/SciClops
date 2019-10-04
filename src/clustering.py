@@ -51,13 +51,9 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 		articles = pd.read_csv(sciclops_dir + 'cache/'+partition+'_articles.tsv.bz2', sep='\t')
 		claims = articles[['url', 'quotes']]
 
-		claims = claims.quotes.apply(lambda l: pd.Series( list(map(lambda d: d['quote'], eval(l))))) \
-										.merge(claims, right_index = True, left_index = True) \
-										.drop(['quotes'], axis = 1) \
-										.melt(id_vars = ['url'], value_name = 'claim') \
-										.drop("variable", axis = 1) \
-										.dropna(subset=['claim'])
-
+		claims.quotes = claims.quotes.apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
+		claims = claims.explode('quotes').rename(columns={'quotes': 'claim'})
+		
 		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t')
 		G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
 		claims['refs'] = claims.url.parallel_apply(lambda u: set(G[u]))
