@@ -13,7 +13,6 @@ from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import MultiLabelBinarizer
 from torch.autograd import Variable
-from torch.nn import init
 from torch.nn.functional import gumbel_softmax
 from torch.optim import SGD
 
@@ -21,7 +20,7 @@ from torch.optim import SGD
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
-nlp = spacy.load("en_core_sci_md")
+nlp = spacy.load("en") #TODO: change to en_core_web_lg 
 hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
 ############################### ######### ###############################
 
@@ -114,52 +113,59 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 cooc, claim_vec, papers_vec = data_preprocessing('bow_embeddings')
 
 # Hyper Parameters
-num_epochs = 100
-learning_rate = 1.e-6
+num_epochs = 1000
+learning_rate = 1.e-2
 weight_decay = 0.0
 
-num_clusters = 10
+num_clusters = 2
 linear_comb = .85
 
 class ClusterNet(nn.Module):
-	def __init__(self, num_clusters, cooc, embeddings_dim):
+	def __init__(self, num_clusters, L, embeddings_dim):
 		super(ClusterNet, self).__init__()
 
 		self.num_clusters = num_clusters
-		self.cooc = cooc
+		self.L = L
+
+		hidden = 2*embeddings_dim
+		
+		#self.L_prime = nn.Parameter(init.xavier_normal_(torch.Tensor(self.L.shape[0], self.L.shape[1])), requires_grad=True)
 
 		self.claimsNet = nn.Sequential(
-			nn.Linear(embeddings_dim, num_clusters),
-			nn.BatchNorm1d(num_clusters),
-			nn.Softmax(dim=1)
+			nn.Linear(embeddings_dim, hidden),
+			nn.ReLU(),
+			nn.Linear(hidden, num_clusters),
+			#nn.BatchNorm1d(num_clusters),
+			nn.LogSoftmax(dim=1)
         )
 		self.papersNet = nn.Sequential(
 			nn.Linear(embeddings_dim, num_clusters),
-			nn.BatchNorm1d(num_clusters),
-			nn.Softmax(dim=1)
+			#nn.BatchNorm1d(num_clusters),
+			nn.LogSoftmax(dim=1)
 		)
 		
 	def forward(self, claims, papers):
-		A = self.claimsNet(claims)
-		P = self.papersNet(papers)
-		return A, P
+		C = gumbel_softmax(self.claimsNet(claims), tau=100, hard=True)
+		C_prime = self.L @ gumbel_softmax(self.papersNet(papers), tau=100, hard=True)
+		return C, C_prime
 	
 
-	def loss(self, A, P):
-		D = A.t() @ self.cooc @ P
-
-		#print(D)
-		cluster_spread_loss = torch.sum(torch.sum(torch.tril(D, diagonal=-1), dim=0) + torch.sum(torch.triu(D, diagonal=1), dim=0))
+	def loss(self, C, C_prime, epoch):
+		#print(C)
+		#loss = MSELoss()
+		# if epoch%2 in [0,1]:
+		# 	return nn.MSELoss()(C_prime, C.data)
+		# else:
+		# 	return nn.MSELoss()(C, C_prime.data)
+		return nn.MSELoss()(C, C_prime)
+		#cluster_spread_loss = torch.sum(torch.sum(torch.tril(D, diagonal=-1), dim=0) + torch.sum(torch.triu(D, diagonal=1), dim=0))
 		#print('cluster loss',cluster_spread_loss)
 		#diag = torch.diagonal(D)
 		#balance_loss = diag.max() - diag.min()
-
-		balance_loss = torch.sum(torch.abs((torch.diagonal(D, 0, dim1=-2, dim2=-1) - torch.sum(torch.diagonal(D, 0, dim1=-2, dim2=-1), dim=0).unsqueeze(dim=0).repeat(1, self.num_clusters)/self.num_clusters))**2)
-
-
+		#balance_loss = torch.sum(torch.abs((torch.diagonal(D, 0, dim1=-2, dim2=-1) - torch.sum(torch.diagonal(D, 0, dim1=-2, dim2=-1), dim=0).unsqueeze(dim=0).repeat(1, self.num_clusters)/self.num_clusters))**2)
 		#print('balance loss',balance_loss)
 		#print(cluster_spread_loss, balance_loss)
-		return linear_comb * cluster_spread_loss + (1-linear_comb) * balance_loss
+		#return linear_comb * cluster_spread_loss + (1-linear_comb) * balance_loss
 		
 
 #Model training
@@ -168,9 +174,10 @@ optimizer = SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
 for epoch in range(num_epochs):    
 	optimizer.zero_grad()
-	A, P = model(claim_vec, papers_vec)
-	loss = model.loss(A, P)
-	print(loss.data.item())
+	C, C_prime = model(claim_vec, papers_vec)
+	loss = model.loss(C, C_prime, epoch)
+	if epoch%100 == 0:
+		print(loss.data.item())
 	loss.backward()
 	optimizer.step()
 
