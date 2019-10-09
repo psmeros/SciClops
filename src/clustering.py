@@ -13,7 +13,7 @@ from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import MultiLabelBinarizer
 from torch.autograd import Variable
-from torch.nn.functional import gumbel_softmax
+from torch.nn.functional import gumbel_softmax, softmax
 from torch.optim import SGD
 
 ############################### CONSTANTS ###############################
@@ -113,8 +113,8 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 cooc, claim_vec, papers_vec = data_preprocessing('bow_embeddings')
 
 # Hyper Parameters
-num_epochs = 1000
-learning_rate = 1.e-2
+num_epochs = 5000
+learning_rate = 1.e-6
 weight_decay = 0.0
 
 num_clusters = 2
@@ -126,38 +126,50 @@ class ClusterNet(nn.Module):
 
 		self.num_clusters = num_clusters
 		self.L = L
-
-		hidden = 2*embeddings_dim
 		
 		#self.L_prime = nn.Parameter(init.xavier_normal_(torch.Tensor(self.L.shape[0], self.L.shape[1])), requires_grad=True)
 
 		self.claimsNet = nn.Sequential(
-			nn.Linear(embeddings_dim, hidden),
-			nn.ReLU(),
-			nn.Linear(hidden, num_clusters),
+			nn.Linear(embeddings_dim, num_clusters),
 			#nn.BatchNorm1d(num_clusters),
-			nn.LogSoftmax(dim=1)
+			nn.Softmax(dim=1)
         )
 		self.papersNet = nn.Sequential(
 			nn.Linear(embeddings_dim, num_clusters),
 			#nn.BatchNorm1d(num_clusters),
-			nn.LogSoftmax(dim=1)
+			nn.Softmax(dim=1)
 		)
 		
 	def forward(self, claims, papers):
-		C = gumbel_softmax(self.claimsNet(claims), tau=100, hard=True)
-		C_prime = self.L @ gumbel_softmax(self.papersNet(papers), tau=100, hard=True)
-		return C, C_prime
+		C = self.claimsNet(claims)
+		P = self.papersNet(papers)
+		#print(C)
+		return C, P
 	
 
-	def loss(self, C, C_prime, epoch):
-		#print(C)
-		#loss = MSELoss()
-		# if epoch%2 in [0,1]:
-		# 	return nn.MSELoss()(C_prime, C.data)
+	def loss(self, C, P, epoch):
+
+		C_prime = self.L @ P
+
+		#print(C_prime)
+		loss = nn.MSELoss()
+		# if epoch%2 == 0:
+		# 	std = torch.sum((torch.std(C, dim=1)))
+		# 	std = std if not torch.isnan(std) else 0
+		# 	return loss(C, C_prime.data) + std
 		# else:
-		# 	return nn.MSELoss()(C, C_prime.data)
-		return nn.MSELoss()(C, C_prime)
+		# 	std = torch.sum((torch.std(C_prime, dim=1)))
+		# 	std = std if not torch.isnan(std) else 0
+		# 	return loss(C_prime, C.data) + std
+
+		#print(torch.max(C, 1))
+		C_diff = C.shape[0] - torch.sum(torch.max(C, 1)[0] - torch.min(C, 1)[0])
+		#C_prime_diff = C_prime.shape[0] -  torch.sum(torch.max(C_prime, 1)[0] - torch.min(C_prime, 1)[0])
+		#std_C = std_C if not torch.isnan(std_C) else 0
+		#std_C_prime = std_C_prime if not torch.isnan(std_C_prime) else 0
+		return loss(C_prime, C) + C_diff #+ C_prime_diff
+
+
 		#cluster_spread_loss = torch.sum(torch.sum(torch.tril(D, diagonal=-1), dim=0) + torch.sum(torch.triu(D, diagonal=1), dim=0))
 		#print('cluster loss',cluster_spread_loss)
 		#diag = torch.diagonal(D)
@@ -174,8 +186,8 @@ optimizer = SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
 for epoch in range(num_epochs):    
 	optimizer.zero_grad()
-	C, C_prime = model(claim_vec, papers_vec)
-	loss = model.loss(C, C_prime, epoch)
+	C, P = model(claim_vec, papers_vec)
+	loss = model.loss(C, P, epoch)
 	if epoch%100 == 0:
 		print(loss.data.item())
 	loss.backward()
