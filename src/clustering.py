@@ -48,12 +48,13 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 		
 
 		articles = pd.read_csv(sciclops_dir + 'cache/'+partition+'_articles.tsv.bz2', sep='\t')
-		claims = articles[['url', 'quotes']]
+		claims = articles[['url', 'quotes']].drop_duplicates(subset='url')
 
 		claims.quotes = claims.quotes.apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
 		claims = claims.explode('quotes').rename(columns={'quotes': 'claim'})
-		
-		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t')
+		claims = claims[~claims['claim'].isna()]
+
+		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
 		G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
 		claims['refs'] = claims.url.parallel_apply(lambda u: set(G[u]))
 		claims = claims.set_index('url')
@@ -114,7 +115,7 @@ cooc, claim_vec, papers_vec = data_preprocessing('bow_embeddings')
 
 # Hyper Parameters
 num_epochs = 5000
-learning_rate = 1.e-6
+learning_rate = 1.e-4
 weight_decay = 0.0
 
 num_clusters = 2
@@ -184,12 +185,14 @@ class ClusterNet(nn.Module):
 model = ClusterNet(num_clusters, cooc, claim_vec.shape[1])
 optimizer = SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
 
-for epoch in range(num_epochs):    
-	optimizer.zero_grad()
+for epoch in range(num_epochs):
+	claim_vec = Variable(claim_vec)
+	papers_vec = Variable(papers_vec)   
 	C, P = model(claim_vec, papers_vec)
 	loss = model.loss(C, P, epoch)
 	if epoch%100 == 0:
 		print(loss.data.item())
+	optimizer.zero_grad()
 	loss.backward()
 	optimizer.step()
 
