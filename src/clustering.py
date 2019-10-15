@@ -2,12 +2,16 @@ import re
 from math import sqrt
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import spacy
 import torch
 import torch.nn as nn
+from matplotlib.colors import LogNorm
+from matplotlib.ticker import ScalarFormatter
 from pandarallel import pandarallel
 from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -16,12 +20,17 @@ from torch.autograd import Variable
 from torch.nn.functional import gumbel_softmax, softmax
 from torch.optim import SGD
 
+from gsdmm import MovieGroupProcess
+
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
-nlp = spacy.load("en") #TODO: change to en_core_web_lg 
+nlp = spacy.load('en_core_web_lg')
 hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
+
+num_clusters = 20
+embeddings_dim = 300
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -30,6 +39,35 @@ hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt
 def read_graph(graph_file):
 		return nx.from_pandas_edgelist(pd.read_csv(graph_file, sep='\t', header=None), 0, 1, create_using=nx.DiGraph())
 
+#Remove stopwords/Lemmatize
+def nlp_clean(text):
+	return ' '.join([str(w.lemma_) for w in nlp(text) if not (w.is_stop or len(w)==1)])
+
+
+def keywords_relation(clean_claims, partition):
+	clean_claims = clean_claims.apply(lambda c: [w for w in hn_vocabulary if w in c])
+	clean_claims = clean_claims[clean_claims.apply(lambda c: len(c) > 0 and c!= [partition])]
+	
+	clean_claims[clean_claims.apply(lambda c: len(c)==1)] = clean_claims[clean_claims.apply(lambda c: len(c)==1)].apply(lambda c: c + [partition])
+	clean_claims = clean_claims.apply(lambda c: [[c[k1], c[k2]] for k1 in range(len(c)) for k2 in range(k1+1,len(c))])
+	clean_claims = pd.DataFrame(clean_claims).rename(columns={'clean_claim': 'pairs'})
+	clean_claims['weight'] = 1/clean_claims['pairs'].apply(len) 
+	clean_claims = clean_claims.explode('pairs')
+	clean_claims['k1'], clean_claims['k2'] = zip(*clean_claims['pairs'].apply(lambda p: (p[0], p[1]) if p[0] < p[1] else (p[1], p[0])))
+	clean_claims = clean_claims.drop('pairs', axis=1)
+	clean_claims = clean_claims.groupby(['k1', 'k2']).sum().reset_index().sort_values('weight', ascending=False)[:15]
+	clean_claims['k1'], clean_claims['k2'] = zip(*clean_claims.apply(lambda c: (c['k1'],c['k2']) if c['k1'] == partition else (c['k2'],c['k1']),axis=1))
+	clean_claims = clean_claims[['k2', 'weight']].set_index('k2')
+	
+	sns.set(context='paper', style='white', color_codes=True)
+	plt.figure(figsize=(2,5))
+	colorticks=[100, 200, 300, 400, 600, 1000]
+	ax = sns.heatmap(clean_claims, norm=LogNorm(clean_claims.min(), clean_claims.max()), cbar_kws={'ticks':colorticks, 'format':ScalarFormatter()}, vmin = 100, vmax=1000, cmap='copper')
+	ax.tick_params(axis='x', labelbottom=False)
+	ax.yaxis.label.set_visible(False)
+	plt.savefig(sciclops_dir+'figures/'+partition+'.png', bbox_inches='tight', transparent=True)
+	plt.show()
+	
 
 def data_preprocessing(representation, partition='cancer', passage='prelude', use_cache=True):
 	'''
@@ -39,20 +77,30 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 	'''
 	if use_cache:
 		cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col='url')
-		claim_vec = pd.read_csv(sciclops_dir + 'cache/claim_vec_'+representation+'.tsv.bz2', sep='\t', index_col='url')
+		claim_vec = pd.read_csv(sciclops_dir + 'cache/claim_vec.tsv.bz2', sep='\t', index_col='url')
 		papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t', index_col='url')
 
 	else:
 		pandarallel.initialize()
-		representation_dim = 200
 		
-
 		articles = pd.read_csv(sciclops_dir + 'cache/'+partition+'_articles.tsv.bz2', sep='\t')
 		claims = articles[['url', 'quotes']].drop_duplicates(subset='url')
 
-		claims.quotes = claims.quotes.apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
+		claims.quotes = claims.quotes.parallel_apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
 		claims = claims.explode('quotes').rename(columns={'quotes': 'claim'})
 		claims = claims[~claims['claim'].isna()]
+
+		#nlp cleaning
+		claims['clean_claim'] = claims['claim'].parallel_apply(lambda c: list(set([w for w in nlp_clean(c).split()])))
+		#remove small claims
+		claims = claims[claims['clean_claim'].parallel_apply(lambda c: len(c) >= 5)]
+
+		#plot relation
+		#keywords_relation(claims['clean_claim'], partition)
+
+		#GSDMM model
+		mgp = MovieGroupProcess(K=num_clusters, alpha=0.1, beta=0.1, n_iters=5)
+		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
 
 		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
 		G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
@@ -67,7 +115,6 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 		mlb = MultiLabelBinarizer()
 		cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
 		papers = papers[papers.index.isin(list(cooc.columns))]
-		claims.claim = claims.claim.astype(str)
 		papers.title = papers.title.astype(str)
 		papers.full_text = papers.full_text.astype(str)
 		
@@ -79,27 +126,25 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 		elif passage == 'full_text':
 			papers_text = papers.title + ' ' + papers.full_text
 
-		claim_text = claims.claim
-
 		if representation == 'embeddings':
-			claim_vec = claim_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 			papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 		elif representation == 'bow':
-			vectorizer = TfidfVectorizer(vocabulary=hn_vocabulary).fit(claim_text).fit(papers_text)
-			claim_vec = vectorizer.transform(claim_text)
+			vectorizer = TfidfVectorizer(vocabulary=hn_vocabulary).fit(papers_text)
 			papers_vec = vectorizer.transform(papers_text)
-			PCA = TruncatedSVD(representation_dim).fit(claim_vec).fit(papers_vec)
-			claim_vec = pd.DataFrame(PCA.transform(claim_vec), index=articles.index)
+			PCA = TruncatedSVD(embeddings_dim).fit(claim_vec).fit(papers_vec)
 			papers_vec = pd.DataFrame(PCA.transform(papers_vec), index=papers.index)
 		elif representation == 'bow_embeddings':
-			claim_text = claim_text.apply(lambda t: ' '.join([w for w in hn_vocabulary if w in t]))
 			papers_text = papers_text.apply(lambda t: ' '.join([w for w in hn_vocabulary if w in t]))
-			claim_vec = claim_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 			papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+
+		#clusters to one-hot
+		claim_vec = np.zeros((len(claims), num_clusters))
+		claim_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
+		claim_vec = pd.DataFrame(claim_vec, index=claims.index)
 
 		#caching    
 		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
-		claim_vec.to_csv(sciclops_dir + 'cache/claim_vec_'+representation+'.tsv.bz2', sep='\t')
+		claim_vec.to_csv(sciclops_dir + 'cache/claim_vec.tsv.bz2', sep='\t')
 		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t')
 	
 	cooc = torch.Tensor(cooc.values.astype(float))
@@ -111,49 +156,40 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 
 ############################### ######### ###############################
 
-cooc, claim_vec, papers_vec = data_preprocessing('bow_embeddings')
+cooc, claim_vec, papers_vec = data_preprocessing('embeddings')
+
 
 # Hyper Parameters
+
+
 num_epochs = 5000
 learning_rate = 1.e-4
 weight_decay = 0.0
 
-num_clusters = 2
-linear_comb = .85
 
 class ClusterNet(nn.Module):
-	def __init__(self, num_clusters, L, embeddings_dim):
+	def __init__(self, L, C):
 		super(ClusterNet, self).__init__()
 
-		self.num_clusters = num_clusters
 		self.L = L
+		self.C = C
 		
 		#self.L_prime = nn.Parameter(init.xavier_normal_(torch.Tensor(self.L.shape[0], self.L.shape[1])), requires_grad=True)
-
-		self.claimsNet = nn.Sequential(
-			nn.Linear(embeddings_dim, num_clusters),
-			#nn.BatchNorm1d(num_clusters),
-			nn.Softmax(dim=1)
-        )
 		self.papersNet = nn.Sequential(
 			nn.Linear(embeddings_dim, num_clusters),
 			#nn.BatchNorm1d(num_clusters),
 			nn.Softmax(dim=1)
 		)
 		
-	def forward(self, claims, papers):
-		C = self.claimsNet(claims)
-		P = self.papersNet(papers)
-		#print(C)
-		return C, P
-	
+	def forward(self, P):
+		return self.papersNet(P)	
 
-	def loss(self, C, P, epoch):
+	def loss(self, P):
 
 		C_prime = self.L @ P
 
 		#print(C_prime)
-		loss = nn.MSELoss()
+		loss = nn.BCELoss()
 		# if epoch%2 == 0:
 		# 	std = torch.sum((torch.std(C, dim=1)))
 		# 	std = std if not torch.isnan(std) else 0
@@ -164,11 +200,11 @@ class ClusterNet(nn.Module):
 		# 	return loss(C_prime, C.data) + std
 
 		#print(torch.max(C, 1))
-		C_diff = C.shape[0] - torch.sum(torch.max(C, 1)[0] - torch.min(C, 1)[0])
-		#C_prime_diff = C_prime.shape[0] -  torch.sum(torch.max(C_prime, 1)[0] - torch.min(C_prime, 1)[0])
+		#C_diff = C_prime.shape[0] - torch.sum(torch.max(C, 1)[0] - torch.min(C, 1)[0])
+		P_diff = P.shape[0] -  torch.sum(torch.max(P, 1)[0] - torch.min(P, 1)[0])
 		#std_C = std_C if not torch.isnan(std_C) else 0
 		#std_C_prime = std_C_prime if not torch.isnan(std_C_prime) else 0
-		return loss(C_prime, C) + C_diff #+ C_prime_diff
+		return loss(C_prime, self.C)  + P_diff
 
 
 		#cluster_spread_loss = torch.sum(torch.sum(torch.tril(D, diagonal=-1), dim=0) + torch.sum(torch.triu(D, diagonal=1), dim=0))
@@ -182,15 +218,14 @@ class ClusterNet(nn.Module):
 		
 
 #Model training
-model = ClusterNet(num_clusters, cooc, claim_vec.shape[1])
+model = ClusterNet(cooc, claim_vec)
 optimizer = SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
 
 for epoch in range(num_epochs):
-	claim_vec = Variable(claim_vec)
 	papers_vec = Variable(papers_vec)   
-	C, P = model(claim_vec, papers_vec)
-	loss = model.loss(C, P, epoch)
-	if epoch%100 == 0:
+	P = model(papers_vec)
+	loss = model.loss(P)
+	if epoch%10 == 0:
 		print(loss.data.item())
 	optimizer.zero_grad()
 	loss.backward()
@@ -201,3 +236,4 @@ for epoch in range(num_epochs):
 
 #claims = pd.read_csv(scilens_dir + 'article_details_v2.tsv.bz2', sep='\t')
 #[u for u in pd.DataFrame(A[:,5].data.tolist()).nlargest(5, 0).join(claims)['url']]
+
