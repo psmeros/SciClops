@@ -26,7 +26,7 @@ from gsdmm import MovieGroupProcess
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
-nlp = spacy.load('en_core_web_lg')
+#nlp = spacy.load('en_core_web_lg')
 hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
 
 num_clusters = 20
@@ -163,7 +163,7 @@ cooc, claim_vec, papers_vec = data_preprocessing('embeddings')
 
 
 num_epochs = 5000
-learning_rate = 1.e-4
+learning_rate = 1.e-3
 weight_decay = 0.0
 
 
@@ -178,7 +178,7 @@ class ClusterNet(nn.Module):
 		self.papersNet = nn.Sequential(
 			nn.Linear(embeddings_dim, num_clusters),
 			#nn.BatchNorm1d(num_clusters),
-			nn.Softmax(dim=1)
+			#nn.Softmax(dim=1)
 		)
 		
 	def forward(self, P):
@@ -189,7 +189,7 @@ class ClusterNet(nn.Module):
 		C_prime = self.L @ P
 
 		#print(C_prime)
-		loss = nn.BCELoss()
+		loss = nn.MSELoss()
 		# if epoch%2 == 0:
 		# 	std = torch.sum((torch.std(C, dim=1)))
 		# 	std = std if not torch.isnan(std) else 0
@@ -201,7 +201,7 @@ class ClusterNet(nn.Module):
 
 		#print(torch.max(C, 1))
 		#C_diff = C_prime.shape[0] - torch.sum(torch.max(C, 1)[0] - torch.min(C, 1)[0])
-		P_diff = P.shape[0] -  torch.sum(torch.max(P, 1)[0] - torch.min(P, 1)[0])
+		P_diff = torch.mean((1.0 - torch.max(P, 1)[0] - torch.min(P, 1)[0])**2)
 		#std_C = std_C if not torch.isnan(std_C) else 0
 		#std_C_prime = std_C_prime if not torch.isnan(std_C_prime) else 0
 		return loss(C_prime, self.C)  + P_diff
@@ -225,7 +225,7 @@ for epoch in range(num_epochs):
 	papers_vec = Variable(papers_vec)   
 	P = model(papers_vec)
 	loss = model.loss(P)
-	if epoch%10 == 0:
+	if epoch%100 == 0:
 		print(loss.data.item())
 	optimizer.zero_grad()
 	loss.backward()
