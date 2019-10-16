@@ -100,7 +100,7 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 		#keywords_relation(claims['clean_claim'], partition)
 
 		#GSDMM model
-		mgp = MovieGroupProcess(K=num_clusters, alpha=0.1, beta=0.1, n_iters=5)
+		mgp = MovieGroupProcess(K=num_clusters, alpha=0.01, beta=0.01, n_iters=50)
 		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
 
 		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
@@ -161,10 +161,10 @@ cooc, claim_vec, papers_vec = data_preprocessing('embeddings')
 
 
 # Hyper Parameters
-num_epochs = 10000
+num_epochs = 5000
 learning_rate = 1.e-3
 weight_decay = 0.0
-
+hidden = 150
 
 class ClusterNet(nn.Module):
 	def __init__(self, L, C):
@@ -175,8 +175,11 @@ class ClusterNet(nn.Module):
 		
 		#self.L_prime = nn.Parameter(init.xavier_normal_(torch.Tensor(self.L.shape[0], self.L.shape[1])), requires_grad=True)
 		self.papersNet = nn.Sequential(
-			nn.Linear(embeddings_dim, num_clusters),
-			#nn.BatchNorm1d(num_clusters),
+			nn.Linear(embeddings_dim, hidden),
+			nn.BatchNorm1d(hidden),
+			nn.ReLU(),
+			nn.Linear(hidden, num_clusters),
+			nn.BatchNorm1d(num_clusters),
 			nn.Softmax(dim=1)
 		)
 		
@@ -213,7 +216,7 @@ for epoch in range(num_epochs):
 	papers_vec = Variable(papers_vec)   
 	P = model(papers_vec)
 	loss = model.loss(P)
-	if epoch%100 == 0:
+	if epoch%10 == 0:
 		print(loss.data.item())
 	optimizer.zero_grad()
 	loss.backward()
