@@ -26,7 +26,7 @@ from gsdmm import MovieGroupProcess
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
-#nlp = spacy.load('en_core_web_lg')
+nlp = spacy.load('en_core_web_lg')
 hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
 
 num_clusters = 20
@@ -37,14 +37,15 @@ embeddings_dim = 300
 
 #Read diffusion graph
 def read_graph(graph_file):
-		return nx.from_pandas_edgelist(pd.read_csv(graph_file, sep='\t', header=None), 0, 1, create_using=nx.DiGraph())
+	return nx.from_pandas_edgelist(pd.read_csv(graph_file, sep='\t', header=None), 0, 1, create_using=nx.DiGraph())
 
 #Remove stopwords/Lemmatize
 def nlp_clean(text):
-	return ' '.join([str(w.lemma_) for w in nlp(text) if not (w.is_stop or len(w)==1)])
+	return ' '.join([str(w.lemma_) for w in nlp(text) if not (w.is_stop or len(w) == 1)])
 
 
 def keywords_relation(clean_claims, partition):
+	
 	clean_claims = clean_claims.apply(lambda c: [w for w in hn_vocabulary if w in c])
 	clean_claims = clean_claims[clean_claims.apply(lambda c: len(c) > 0 and c!= [partition])]
 	
@@ -160,9 +161,7 @@ cooc, claim_vec, papers_vec = data_preprocessing('embeddings')
 
 
 # Hyper Parameters
-
-
-num_epochs = 5000
+num_epochs = 10000
 learning_rate = 1.e-3
 weight_decay = 0.0
 
@@ -178,7 +177,7 @@ class ClusterNet(nn.Module):
 		self.papersNet = nn.Sequential(
 			nn.Linear(embeddings_dim, num_clusters),
 			#nn.BatchNorm1d(num_clusters),
-			#nn.Softmax(dim=1)
+			nn.Softmax(dim=1)
 		)
 		
 	def forward(self, P):
@@ -188,24 +187,13 @@ class ClusterNet(nn.Module):
 
 		C_prime = self.L @ P
 
-		#print(C_prime)
-		loss = nn.MSELoss()
-		# if epoch%2 == 0:
-		# 	std = torch.sum((torch.std(C, dim=1)))
-		# 	std = std if not torch.isnan(std) else 0
-		# 	return loss(C, C_prime.data) + std
-		# else:
-		# 	std = torch.sum((torch.std(C_prime, dim=1)))
-		# 	std = std if not torch.isnan(std) else 0
-		# 	return loss(C_prime, C.data) + std
+		#loss = nn.MSELoss()
+		#print(torch.max(C, 1))		
+		#P_diff = torch.mean((1.0 - torch.max(P, 1)[0] - torch.min(P, 1)[0])**2)
 
-		#print(torch.max(C, 1))
-		#C_diff = C_prime.shape[0] - torch.sum(torch.max(C, 1)[0] - torch.min(C, 1)[0])
-		P_diff = torch.mean((1.0 - torch.max(P, 1)[0] - torch.min(P, 1)[0])**2)
-		#std_C = std_C if not torch.isnan(std_C) else 0
-		#std_C_prime = std_C_prime if not torch.isnan(std_C_prime) else 0
-		return loss(C_prime, self.C)  + P_diff
+		return torch.norm(self.C - C_prime, p='fro')
 
+		#return loss(C_prime, )  + P_diff
 
 		#cluster_spread_loss = torch.sum(torch.sum(torch.tril(D, diagonal=-1), dim=0) + torch.sum(torch.triu(D, diagonal=1), dim=0))
 		#print('cluster loss',cluster_spread_loss)
@@ -230,9 +218,6 @@ for epoch in range(num_epochs):
 	optimizer.zero_grad()
 	loss.backward()
 	optimizer.step()
-
-
-
 
 #claims = pd.read_csv(scilens_dir + 'article_details_v2.tsv.bz2', sep='\t')
 #[u for u in pd.DataFrame(A[:,5].data.tolist()).nlargest(5, 0).join(claims)['url']]
