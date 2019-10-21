@@ -77,8 +77,8 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 	:param passage: title, prelude, full_text (filter for paper text)
 	'''
 	if use_cache:
-		cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col='url')
-		claim_vec = pd.read_csv(sciclops_dir + 'cache/claim_vec.tsv.bz2', sep='\t', index_col='url')
+		cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim'])
+		claim_vec = pd.read_csv(sciclops_dir + 'cache/claim_vec.tsv.bz2', sep='\t', index_col=['url', 'claim'])
 		papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t', index_col='url')
 
 	else:
@@ -91,31 +91,29 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 		claims = claims.explode('quotes').rename(columns={'quotes': 'claim'})
 		claims = claims[~claims['claim'].isna()]
 
-		#nlp cleaning
+		#cleaning
+		print('cleaning...')
 		claims['clean_claim'] = claims['claim'].parallel_apply(lambda c: list(set([w for w in nlp_clean(c).split()])))
 		#remove small claims
 		claims = claims[claims['clean_claim'].parallel_apply(lambda c: len(c) >= 5)]
 
-		#plot relation
-		#keywords_relation(claims['clean_claim'], partition)
-
-		#GSDMM model
-		mgp = MovieGroupProcess(K=num_clusters, alpha=0.01, beta=0.01, n_iters=50)
-		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
-
 		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
 		G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
 		claims['refs'] = claims.url.parallel_apply(lambda u: set(G[u]))
-		claims = claims.set_index('url')
+
+		blacklist_refs = set(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
+		claims['refs'] = claims.refs.parallel_apply(lambda r: (r - blacklist_refs).intersection(set(papers['url'].to_list())))
+		papers = papers[papers['url'].isin([e for l in claims['refs'].to_list() for e in l])]
+
+		#plot relation
+		#keywords_relation(claims['clean_claim'], partition)
+
+		claims = claims.set_index(['url', 'claim'])
 		papers = papers.set_index('url')
 
-		#cleaning
-		print('cleaning...')
-		blacklist_refs  = set(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
-		claims['refs'] = claims.refs.parallel_apply(lambda r: (r - blacklist_refs).intersection(set(papers.index.to_list())))
 		mlb = MultiLabelBinarizer()
 		cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
-		papers = papers[papers.index.isin(list(cooc.columns))]
+	
 		papers.title = papers.title.astype(str)
 		papers.full_text = papers.full_text.astype(str)
 		
@@ -138,7 +136,10 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 			papers_text = papers_text.apply(lambda t: ' '.join([w for w in hn_vocabulary if w in t]))
 			papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 
-		#clusters to one-hot
+		#clusters to one-hot (GSDMM model)
+		mgp = MovieGroupProcess(K=num_clusters, alpha=0.01, beta=0.01, n_iters=1)
+		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
+
 		claim_vec = np.zeros((len(claims), num_clusters))
 		claim_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
 		claim_vec = pd.DataFrame(claim_vec, index=claims.index)
@@ -157,7 +158,7 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 
 ############################### ######### ###############################
 
-cooc, claim_vec, papers_vec = data_preprocessing('embeddings')
+cooc, claim_vec, papers_vec = data_preprocessing('embeddings', use_cache=False)
 
 
 # Hyper Parameters
