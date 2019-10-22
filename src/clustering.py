@@ -102,7 +102,7 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 		claims['refs'] = claims.url.parallel_apply(lambda u: set(G[u]))
 
 		blacklist_refs = set(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
-		claims['refs'] = claims.refs.parallel_apply(lambda r: (r - blacklist_refs).intersection(set(papers['url'].to_list())))
+		claims['refs'] = claims.refs.parallel_apply(lambda r: (r - blacklist_refs))
 		papers = papers[papers['url'].isin([e for l in claims['refs'].to_list() for e in l])]
 
 		#plot relation
@@ -137,7 +137,7 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 			papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 
 		#clusters to one-hot (GSDMM model)
-		mgp = MovieGroupProcess(K=num_clusters, alpha=0.01, beta=0.01, n_iters=1)
+		mgp = MovieGroupProcess(K=num_clusters, alpha=0.01, beta=0.01, n_iters=50)
 		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
 
 		claim_vec = np.zeros((len(claims), num_clusters))
@@ -162,18 +162,16 @@ cooc, claim_vec, papers_vec = data_preprocessing('embeddings', use_cache=True)
 
 
 # Hyper Parameters
-num_epochs = 1000
+num_epochs = 5000
 learning_rate = 1.e-3
 weight_decay = 0.0
-hidden = 150
-gamma = 0.1
+hidden = 600
+gamma = 0.001
+batch_size = 256
 
 class ClusterNet(nn.Module):
-	def __init__(self, L, C):
+	def __init__(self):
 		super(ClusterNet, self).__init__()
-
-		self.L = L
-		self.C = C
 		
 		#self.L_prime = nn.Parameter(init.xavier_normal_(torch.Tensor(self.L.shape[0], self.L.shape[1])), requires_grad=True)
 		self.papersNet = nn.Sequential(
@@ -185,49 +183,49 @@ class ClusterNet(nn.Module):
 			# nn.ReLU()
 			nn.Linear(embeddings_dim, num_clusters),
 			nn.BatchNorm1d(num_clusters),
-			nn.ReLU()
+			nn.Softmax(dim=1)
 		)
 		
 	def forward(self, P):
 		return self.papersNet(P)	
 
-	def loss(self, P):
+	def loss(self, P, L, C):
 
-		C_prime = self.L @ P
+		C_prime = L @ P
 
-		#loss = nn.MSELoss()
-		#print(torch.max(C, 1))		
-		#P_diff = torch.mean((1.0 - torch.max(P, 1)[0] - torch.min(P, 1)[0])**2)
+		#return nn.MSELoss()(C_prime, C) + gamma * torch.norm(C_prime, p='fro')
+		return torch.norm(C - C_prime, p='fro') + gamma * torch.norm(C_prime, p='fro')
 
-		return nn.MSELoss()(C_prime, self.C) + gamma * torch.norm(P, p='fro')
-		#return torch.norm(self.C - C_prime, p='fro') + gamma * torch.norm(P, p='fro')
-
-		#return loss(C_prime, )  + P_diff
-
-		#cluster_spread_loss = torch.sum(torch.sum(torch.tril(D, diagonal=-1), dim=0) + torch.sum(torch.triu(D, diagonal=1), dim=0))
-		#print('cluster loss',cluster_spread_loss)
-		#diag = torch.diagonal(D)
-		#balance_loss = diag.max() - diag.min()
-		#balance_loss = torch.sum(torch.abs((torch.diagonal(D, 0, dim1=-2, dim2=-1) - torch.sum(torch.diagonal(D, 0, dim1=-2, dim2=-1), dim=0).unsqueeze(dim=0).repeat(1, self.num_clusters)/self.num_clusters))**2)
-		#print('balance loss',balance_loss)
-		#print(cluster_spread_loss, balance_loss)
-		#return linear_comb * cluster_spread_loss + (1-linear_comb) * balance_loss
 		
 
 #Model training
-model = ClusterNet(cooc, claim_vec)
+model = ClusterNet()
 optimizer = SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
 
 for epoch in range(num_epochs):
-	papers_vec = Variable(papers_vec)   
-	P = model(papers_vec)
-	loss = model.loss(P)
-	if epoch%100 == 0:
-		print(loss.data.item())
+	p = np.random.permutation(len(papers_vec))
+
+	mean_loss = []
+	for i in range(0, len(p), batch_size):
+		P = papers_vec[p[i:i+batch_size]]
+		L = cooc[:, p[i:i+batch_size]]
+		C = claim_vec
+		P = Variable(P, requires_grad=False)
+		L = Variable(L, requires_grad=False)   
+		C = Variable(C, requires_grad=False)
+
+		P = model(P)
+		loss = model.loss(P, L, C)
+		mean_loss.append(loss.data.item())
+
+		optimizer.zero_grad()
+		loss.backward()
+		optimizer.step()
+
+	if epoch%500 == 0:
+		print(sum(mean_loss)/len(mean_loss))
 		print(P[0])
-	optimizer.zero_grad()
-	loss.backward()
-	optimizer.step()
+
 
 #claims = pd.read_csv(scilens_dir + 'article_details_v2.tsv.bz2', sep='\t')
 #[u for u in pd.DataFrame(A[:,5].data.tolist()).nlargest(5, 0).join(claims)['url']]
