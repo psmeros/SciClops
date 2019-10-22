@@ -158,14 +158,15 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 
 ############################### ######### ###############################
 
-cooc, claim_vec, papers_vec = data_preprocessing('embeddings', use_cache=False)
+cooc, claim_vec, papers_vec = data_preprocessing('embeddings', use_cache=True)
 
 
 # Hyper Parameters
-num_epochs = 5000
+num_epochs = 1000
 learning_rate = 1.e-3
 weight_decay = 0.0
 hidden = 150
+gamma = 0.1
 
 class ClusterNet(nn.Module):
 	def __init__(self, L, C):
@@ -176,12 +177,15 @@ class ClusterNet(nn.Module):
 		
 		#self.L_prime = nn.Parameter(init.xavier_normal_(torch.Tensor(self.L.shape[0], self.L.shape[1])), requires_grad=True)
 		self.papersNet = nn.Sequential(
-			nn.Linear(embeddings_dim, hidden),
-			nn.BatchNorm1d(hidden),
-			nn.ReLU(),
-			nn.Linear(hidden, num_clusters),
+			# nn.Linear(embeddings_dim, hidden),
+			# nn.BatchNorm1d(hidden),
+			# nn.ReLU(),
+			# nn.Linear(hidden, num_clusters),
+			# nn.BatchNorm1d(num_clusters),
+			# nn.ReLU()
+			nn.Linear(embeddings_dim, num_clusters),
 			nn.BatchNorm1d(num_clusters),
-			nn.Softmax(dim=1)
+			nn.ReLU()
 		)
 		
 	def forward(self, P):
@@ -195,7 +199,8 @@ class ClusterNet(nn.Module):
 		#print(torch.max(C, 1))		
 		#P_diff = torch.mean((1.0 - torch.max(P, 1)[0] - torch.min(P, 1)[0])**2)
 
-		return torch.norm(self.C - C_prime, p='fro')
+		return nn.MSELoss()(C_prime, self.C) + gamma * torch.norm(P, p='fro')
+		#return torch.norm(self.C - C_prime, p='fro') + gamma * torch.norm(P, p='fro')
 
 		#return loss(C_prime, )  + P_diff
 
@@ -217,8 +222,9 @@ for epoch in range(num_epochs):
 	papers_vec = Variable(papers_vec)   
 	P = model(papers_vec)
 	loss = model.loss(P)
-	if epoch%10 == 0:
+	if epoch%100 == 0:
 		print(loss.data.item())
+		print(P[0])
 	optimizer.zero_grad()
 	loss.backward()
 	optimizer.step()
