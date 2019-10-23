@@ -16,6 +16,7 @@ from pandarallel import pandarallel
 from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.mixture import GaussianMixture
 from torch.autograd import Variable
 from torch.nn.functional import gumbel_softmax, softmax
 from torch import optim
@@ -87,7 +88,7 @@ def transform_papers(papers, passage, representation):
 	elif representation == 'bow':
 		vectorizer = TfidfVectorizer(vocabulary=hn_vocabulary).fit(papers_text)
 		papers_vec = vectorizer.transform(papers_text)
-		PCA = TruncatedSVD(embeddings_dim).fit(claim_vec).fit(papers_vec)
+		PCA = TruncatedSVD(embeddings_dim).fit(papers_vec)
 		papers_vec = pd.DataFrame(PCA.transform(papers_vec), index=papers.index)
 	elif representation == 'bow_embeddings':
 		papers_text = papers_text.apply(lambda t: ' '.join([w for w in hn_vocabulary if w in t]))
@@ -95,24 +96,23 @@ def transform_papers(papers, passage, representation):
 
 	return papers_vec
 
-
 def transform_claims(claims, clustering):
 	if clustering == 'GSDMM':
 		#clusters to one-hot (GSDMM model)
 		mgp = MovieGroupProcess(K=num_clusters, alpha=0.01, beta=0.01, n_iters=50)
 		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
 
-		claim_vec = np.zeros((len(claims), num_clusters))
-		claim_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
-		claim_vec = pd.DataFrame(claim_vec, index=claims.index)
+		claims_vec = np.zeros((len(claims), num_clusters))
+		claims_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
+		claims_vec = pd.DataFrame(claims_vec, index=claims.index)
 	elif clustering == 'GMM':
+		gmm = GaussianMixture(num_clusters)
+		claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series)
+		claims_vec = gmm.fit(claims_vec.values).predict_proba(claims_vec.values)
+	return claims_vec
 
-		claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
 
-	return claim_vec
-
-
-def data_preprocessing(representation, partition='cancer', passage='prelude', use_cache=True):
+def data_preprocessing(representation, clustering, partition='cancer', passage='prelude', use_cache=True):
 	'''
 	:param representation: bow, embeddings, bow_embeddings
 	:param partition: article topic e.g., cancer
@@ -120,13 +120,13 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 	'''
 	if use_cache:
 		cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim'])
-		claim_vec = pd.read_csv(sciclops_dir + 'cache/claim_vec.tsv.bz2', sep='\t', index_col=['url', 'claim'])
+		claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_vec.tsv.bz2', sep='\t', index_col=['url', 'claim'])
 		papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t', index_col='url')
 
 	else:
 		pandarallel.initialize()
 		
-		articles = pd.read_csv(sciclops_dir + 'cache/'+partition+'_articles.tsv.bz2', sep='\t', nrows=10)
+		articles = pd.read_csv(sciclops_dir + 'cache/'+partition+'_articles.tsv.bz2', sep='\t')
 		claims = articles[['url', 'quotes']].drop_duplicates(subset='url')
 
 		claims.quotes = claims.quotes.parallel_apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
@@ -157,23 +157,23 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 		cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
 
 		papers_vec = transform_papers(papers, passage, representation)
-
+		claims_vec = transform_claims(claims, clustering)
 
 		#caching    
 		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
-		claim_vec.to_csv(sciclops_dir + 'cache/claim_vec.tsv.bz2', sep='\t')
+		claims_vec.to_csv(sciclops_dir + 'cache/claims_vec.tsv.bz2', sep='\t')
 		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+passage+'.tsv.bz2', sep='\t')
 	
 	cooc = torch.Tensor(cooc.values.astype(float))
-	claim_vec = torch.Tensor(claim_vec.values.astype(float))
+	claims_vec = torch.Tensor(claims_vec.values.astype(float))
 	papers_vec = torch.Tensor(papers_vec.values.astype(float))
 	
-	return cooc, claim_vec, papers_vec
+	return cooc, claims_vec, papers_vec
 
 
 ############################### ######### ###############################
 
-cooc, claim_vec, papers_vec = data_preprocessing('bow_embeddings', use_cache=False)
+cooc, claims_vec, papers_vec = data_preprocessing('embeddings', 'GMM', use_cache=False)
 
 
 # Hyper Parameters
@@ -224,7 +224,7 @@ for epoch in range(num_epochs):
 	for i in range(0, len(p), batch_size):
 		P = papers_vec[p[i:i+batch_size]]
 		L = cooc[:, p[i:i+batch_size]]
-		C = claim_vec
+		C = claims_vec
 		P = Variable(P, requires_grad=False)
 		L = Variable(L, requires_grad=False)   
 		C = Variable(C, requires_grad=False)
