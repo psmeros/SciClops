@@ -17,6 +17,7 @@ from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.mixture import GaussianMixture
+from sklearn.manifold import TSNE
 from torch.autograd import Variable
 from torch.nn.functional import gumbel_softmax, softmax
 from torch import optim
@@ -30,7 +31,7 @@ sciclops_dir = str(Path.home()) + '/data/sciclops/'
 nlp = spacy.load('en_core_web_lg')
 hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
 
-num_clusters = 20
+num_clusters = 10
 embeddings_dim = 300
 ############################### ######### ###############################
 
@@ -42,7 +43,11 @@ def read_graph(graph_file):
 
 #Remove stopwords/Lemmatize
 def nlp_clean(text):
-	return ' '.join([str(w.lemma_) for w in nlp(text) if not (w.is_stop or len(w) == 1)])
+	if not text.endswith('.'):
+		text = ''
+	else:
+		text = ' '.join([str(w.lemma_) for w in nlp(text) if not (w.is_stop or len(w) == 1)])
+	return text
 
 
 def keywords_relation(clean_claims, partition):
@@ -72,10 +77,11 @@ def keywords_relation(clean_claims, partition):
 	
 
 def transform_papers(papers, passage, representation):
+	print('transforming papers...')
+
 	papers.title = papers.title.astype(str)
 	papers.full_text = papers.full_text.astype(str)
 	
-	print('transforming papers...')
 	if passage == 'title':
 		papers_text = papers.title
 	elif passage == 'prelude':
@@ -97,6 +103,8 @@ def transform_papers(papers, passage, representation):
 	return papers_vec
 
 def transform_claims(claims, clustering):
+	print('transforming claims...')
+
 	if clustering == 'GSDMM':
 		#clusters to one-hot (GSDMM model)
 		mgp = MovieGroupProcess(K=num_clusters, alpha=0.01, beta=0.01, n_iters=50)
@@ -104,11 +112,14 @@ def transform_claims(claims, clustering):
 
 		claims_vec = np.zeros((len(claims), num_clusters))
 		claims_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
-		claims_vec = pd.DataFrame(claims_vec, index=claims.index)
 	elif clustering == 'GMM':
 		gmm = GaussianMixture(num_clusters)
-		claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series)
-		claims_vec = gmm.fit(claims_vec.values).predict_proba(claims_vec.values)
+		claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
+		#claims_vec = TSNE().fit_transform(claims_vec)	
+		claims_vec = TruncatedSVD(2).fit_transform(claims_vec)	
+		claims_vec = gmm.fit(claims_vec).predict_proba(claims_vec)
+
+	claims_vec = pd.DataFrame(claims_vec, index=claims.index)
 	return claims_vec
 
 
@@ -126,7 +137,8 @@ def data_preprocessing(representation, clustering, partition='cancer', passage='
 	else:
 		pandarallel.initialize()
 		
-		articles = pd.read_csv(sciclops_dir + 'cache/'+partition+'_articles.tsv.bz2', sep='\t')
+		articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
+		#articles = pd.read_csv(sciclops_dir + 'cache/'+partition+'_articles.tsv.bz2', sep='\t')
 		claims = articles[['url', 'quotes']].drop_duplicates(subset='url')
 
 		claims.quotes = claims.quotes.parallel_apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
@@ -137,7 +149,11 @@ def data_preprocessing(representation, clustering, partition='cancer', passage='
 		print('cleaning...')
 		claims['clean_claim'] = claims['claim'].parallel_apply(lambda c: list(set([w for w in nlp_clean(c).split()])))
 		#remove small claims
-		claims = claims[claims['clean_claim'].parallel_apply(lambda c: len(c) >= 5)]
+		claims = claims[claims['clean_claim'].str.len() >= 5]
+		#remove noise
+		claims['clean_claim'] = claims['clean_claim'].parallel_apply(lambda c: [w for w in hn_vocabulary if w in c])
+		claims = claims[claims['clean_claim'].str.len() != 0]
+
 
 		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
 		G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
@@ -197,7 +213,7 @@ class ClusterNet(nn.Module):
 			# nn.BatchNorm1d(num_clusters),
 			# nn.ReLU()
 			nn.Linear(embeddings_dim, num_clusters),
-			# nn.BatchNorm1d(num_clusters),
+			nn.BatchNorm1d(num_clusters),
 			nn.ReLU()
 		)
 		
