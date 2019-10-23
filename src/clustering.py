@@ -18,7 +18,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import MultiLabelBinarizer
 from torch.autograd import Variable
 from torch.nn.functional import gumbel_softmax, softmax
-from torch.optim import SGD
+from torch import optim
 
 from gsdmm import MovieGroupProcess
 
@@ -70,6 +70,48 @@ def keywords_relation(clean_claims, partition):
 	plt.show()
 	
 
+def transform_papers(papers, passage, representation):
+	papers.title = papers.title.astype(str)
+	papers.full_text = papers.full_text.astype(str)
+	
+	print('transforming papers...')
+	if passage == 'title':
+		papers_text = papers.title
+	elif passage == 'prelude':
+		papers_text = papers.title + ' ' + papers.full_text.apply(lambda w: w.split('\n')[0])
+	elif passage == 'full_text':
+		papers_text = papers.title + ' ' + papers.full_text
+
+	if representation == 'embeddings':
+		papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+	elif representation == 'bow':
+		vectorizer = TfidfVectorizer(vocabulary=hn_vocabulary).fit(papers_text)
+		papers_vec = vectorizer.transform(papers_text)
+		PCA = TruncatedSVD(embeddings_dim).fit(claim_vec).fit(papers_vec)
+		papers_vec = pd.DataFrame(PCA.transform(papers_vec), index=papers.index)
+	elif representation == 'bow_embeddings':
+		papers_text = papers_text.apply(lambda t: ' '.join([w for w in hn_vocabulary if w in t]))
+		papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+
+	return papers_vec
+
+
+def transform_claims(claims, clustering):
+	if clustering == 'GSDMM':
+		#clusters to one-hot (GSDMM model)
+		mgp = MovieGroupProcess(K=num_clusters, alpha=0.01, beta=0.01, n_iters=50)
+		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
+
+		claim_vec = np.zeros((len(claims), num_clusters))
+		claim_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
+		claim_vec = pd.DataFrame(claim_vec, index=claims.index)
+	elif clustering == 'GMM':
+
+		claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+
+	return claim_vec
+
+
 def data_preprocessing(representation, partition='cancer', passage='prelude', use_cache=True):
 	'''
 	:param representation: bow, embeddings, bow_embeddings
@@ -84,7 +126,7 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 	else:
 		pandarallel.initialize()
 		
-		articles = pd.read_csv(sciclops_dir + 'cache/'+partition+'_articles.tsv.bz2', sep='\t')
+		articles = pd.read_csv(sciclops_dir + 'cache/'+partition+'_articles.tsv.bz2', sep='\t', nrows=10)
 		claims = articles[['url', 'quotes']].drop_duplicates(subset='url')
 
 		claims.quotes = claims.quotes.parallel_apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
@@ -113,36 +155,9 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 
 		mlb = MultiLabelBinarizer()
 		cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
-	
-		papers.title = papers.title.astype(str)
-		papers.full_text = papers.full_text.astype(str)
-		
-		print('vectorizing...')
-		if passage == 'title':
-			papers_text = papers.title
-		elif passage == 'prelude':
-			papers_text = papers.title + ' ' + papers.full_text.apply(lambda w: w.split('\n')[0])
-		elif passage == 'full_text':
-			papers_text = papers.title + ' ' + papers.full_text
 
-		if representation == 'embeddings':
-			papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
-		elif representation == 'bow':
-			vectorizer = TfidfVectorizer(vocabulary=hn_vocabulary).fit(papers_text)
-			papers_vec = vectorizer.transform(papers_text)
-			PCA = TruncatedSVD(embeddings_dim).fit(claim_vec).fit(papers_vec)
-			papers_vec = pd.DataFrame(PCA.transform(papers_vec), index=papers.index)
-		elif representation == 'bow_embeddings':
-			papers_text = papers_text.apply(lambda t: ' '.join([w for w in hn_vocabulary if w in t]))
-			papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+		papers_vec = transform_papers(papers, passage, representation)
 
-		#clusters to one-hot (GSDMM model)
-		mgp = MovieGroupProcess(K=num_clusters, alpha=0.01, beta=0.01, n_iters=50)
-		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
-
-		claim_vec = np.zeros((len(claims), num_clusters))
-		claim_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
-		claim_vec = pd.DataFrame(claim_vec, index=claims.index)
 
 		#caching    
 		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
@@ -158,7 +173,7 @@ def data_preprocessing(representation, partition='cancer', passage='prelude', us
 
 ############################### ######### ###############################
 
-cooc, claim_vec, papers_vec = data_preprocessing('embeddings', use_cache=True)
+cooc, claim_vec, papers_vec = data_preprocessing('bow_embeddings', use_cache=False)
 
 
 # Hyper Parameters
@@ -182,8 +197,8 @@ class ClusterNet(nn.Module):
 			# nn.BatchNorm1d(num_clusters),
 			# nn.ReLU()
 			nn.Linear(embeddings_dim, num_clusters),
-			nn.BatchNorm1d(num_clusters),
-			nn.Softmax(dim=1)
+			# nn.BatchNorm1d(num_clusters),
+			nn.ReLU()
 		)
 		
 	def forward(self, P):
@@ -200,7 +215,7 @@ class ClusterNet(nn.Module):
 
 #Model training
 model = ClusterNet()
-optimizer = SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
+optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
 
 for epoch in range(num_epochs):
 	p = np.random.permutation(len(papers_vec))
