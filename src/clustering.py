@@ -32,7 +32,7 @@ nlp = spacy.load('en_core_web_lg')
 hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
 
 num_clusters = 10
-embeddings_dim = 300
+embeddings_dim = 50
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -91,6 +91,9 @@ def transform_papers(papers, passage, representation):
 
 	if representation == 'embeddings':
 		papers_vec = papers_text.parallel_apply(lambda x: nlp(x).vector).apply(pd.Series)
+		papers_vec = TruncatedSVD(2).fit_transform(papers_vec)
+		#papers_vec = GaussianMixture(num_clusters).fit(papers_vec).predict_proba(papers_vec)
+		papers_vec = pd.DataFrame(papers_vec, index=papers.index)
 	elif representation == 'bow':
 		vectorizer = TfidfVectorizer(vocabulary=hn_vocabulary).fit(papers_text)
 		papers_vec = vectorizer.transform(papers_text)
@@ -113,11 +116,10 @@ def transform_claims(claims, clustering):
 		claims_vec = np.zeros((len(claims), num_clusters))
 		claims_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
 	elif clustering == 'GMM':
-		gmm = GaussianMixture(num_clusters)
 		claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
 		#claims_vec = TSNE().fit_transform(claims_vec)	
 		claims_vec = TruncatedSVD(2).fit_transform(claims_vec)	
-		claims_vec = gmm.fit(claims_vec).predict_proba(claims_vec)
+		claims_vec = GaussianMixture(num_clusters).fit(claims_vec).predict_proba(claims_vec)
 
 	claims_vec = pd.DataFrame(claims_vec, index=claims.index)
 	return claims_vec
@@ -189,16 +191,16 @@ def data_preprocessing(representation, clustering, partition='cancer', passage='
 
 ############################### ######### ###############################
 
-cooc, claims_vec, papers_vec = data_preprocessing('embeddings', 'GMM', use_cache=False)
+cooc, claims_vec, papers_vec = data_preprocessing('embeddings', 'GMM', use_cache=True)
 
 
 # Hyper Parameters
 num_epochs = 5000
-learning_rate = 1.e-3
+learning_rate = 1.e-5
 weight_decay = 0.0
-hidden = 600
-gamma = 0.001
-batch_size = 256
+hidden = 50
+gamma = 1.e-5
+batch_size = 1024
 
 class ClusterNet(nn.Module):
 	def __init__(self):
@@ -206,15 +208,15 @@ class ClusterNet(nn.Module):
 		
 		#self.L_prime = nn.Parameter(init.xavier_normal_(torch.Tensor(self.L.shape[0], self.L.shape[1])), requires_grad=True)
 		self.papersNet = nn.Sequential(
-			# nn.Linear(embeddings_dim, hidden),
-			# nn.BatchNorm1d(hidden),
-			# nn.ReLU(),
-			# nn.Linear(hidden, num_clusters),
-			# nn.BatchNorm1d(num_clusters),
-			# nn.ReLU()
-			nn.Linear(embeddings_dim, num_clusters),
+			nn.Linear(2, hidden),
+			nn.BatchNorm1d(hidden),
+			nn.ReLU(),
+			nn.Linear(hidden, num_clusters),
 			nn.BatchNorm1d(num_clusters),
 			nn.ReLU()
+			# nn.Linear(num_clusters, num_clusters),
+			# nn.BatchNorm1d(num_clusters),
+			# nn.ReLU()
 		)
 		
 	def forward(self, P):
@@ -225,7 +227,7 @@ class ClusterNet(nn.Module):
 		C_prime = L @ P
 
 		#return nn.MSELoss()(C_prime, C) + gamma * torch.norm(C_prime, p='fro')
-		return torch.norm(C - C_prime, p='fro') + gamma * torch.norm(C_prime, p='fro')
+		return torch.norm(C - C_prime, p='fro') + gamma * torch.norm(P, p='fro')
 
 		
 
@@ -253,7 +255,7 @@ for epoch in range(num_epochs):
 		loss.backward()
 		optimizer.step()
 
-	if epoch%500 == 0:
+	if epoch%100 == 0:
 		print(sum(mean_loss)/len(mean_loss))
 		print(P[0])
 
