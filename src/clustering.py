@@ -146,21 +146,21 @@ def data_preprocessing(clustering, passage='prelude', use_cache=True):
 		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
 		claims_vec.to_csv(sciclops_dir + 'cache/claims_vec.tsv.bz2', sep='\t')
 		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+'_'+passage+'.tsv.bz2', sep='\t')
-	
-	cooc = torch.Tensor(cooc.values.astype(float))
-	claims_vec = torch.Tensor(claims_vec.values.astype(float))
-	papers_vec = torch.Tensor(papers_vec.values.astype(float))
-	
+		
 	return cooc, claims_vec, papers_vec
 
 
 ############################### ######### ###############################
 
-cooc, claims_vec, papers_vec = data_preprocessing('PCA-GMM', use_cache=False)
+cooc, claims_vec, papers_vec = data_preprocessing('PCA-GMM', use_cache=True)
+papers_vec_index = papers_vec.index
+cooc = torch.Tensor(cooc.values.astype(float))
+claims_vec = torch.Tensor(claims_vec.values.astype(float))
+papers_vec = torch.Tensor(papers_vec.values.astype(float))
 
 
 # Hyper Parameters
-num_epochs = 5000
+num_epochs = 50
 learning_rate = 1.e-5
 weight_decay = 0.0
 hidden = 50
@@ -173,7 +173,7 @@ class ClusterNet(nn.Module):
 		
 		#self.L_prime = nn.Parameter(init.xavier_normal_(torch.Tensor(self.L.shape[0], self.L.shape[1])), requires_grad=True)
 		self.papersNet = nn.Sequential(
-			nn.Linear(2, hidden),
+			nn.Linear(NUM_CLUSTERS, hidden),
 			nn.BatchNorm1d(hidden),
 			nn.ReLU(),
 			nn.Linear(hidden, NUM_CLUSTERS),
@@ -193,9 +193,7 @@ class ClusterNet(nn.Module):
 
 		#return nn.MSELoss()(C_prime, C) + gamma * torch.norm(C_prime, p='fro')
 		return torch.norm(C - C_prime, p='fro') + gamma * torch.norm(P, p='fro')
-
 		
-
 #Model training
 model = ClusterNet()
 optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
@@ -222,9 +220,6 @@ for epoch in range(num_epochs):
 
 	if epoch%100 == 0:
 		print(sum(mean_loss)/len(mean_loss))
-		print(P[0])
 
-
-#claims = pd.read_csv(scilens_dir + 'article_details_v2.tsv.bz2', sep='\t')
-#[u for u in pd.DataFrame(A[:,5].data.tolist()).nlargest(5, 0).join(claims)['url']]
-
+papers_vec = pd.DataFrame(model(papers_vec).detach().numpy(), index=papers_vec_index)
+papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_learnt'+'.tsv.bz2', sep='\t')
