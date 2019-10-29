@@ -160,25 +160,26 @@ papers_vec = torch.Tensor(papers_vec.values.astype(float))
 
 
 # Hyper Parameters
-num_epochs = 50
-learning_rate = 1.e-5
+num_epochs = 5000
+learning_rate = 1.e-3
 weight_decay = 0.0
 hidden = 50
 gamma = 1.e-5
-batch_size = 1024
+batch_size = 2048
 
 class ClusterNet(nn.Module):
-	def __init__(self):
+	def __init__(self, shape):
 		super(ClusterNet, self).__init__()
 		
-		#self.L_prime = nn.Parameter(init.xavier_normal_(torch.Tensor(self.L.shape[0], self.L.shape[1])), requires_grad=True)
+		self.P_prime = nn.Parameter(nn.init.xavier_normal_(torch.Tensor(shape[0], shape[1])), requires_grad=True)
+		
 		self.papersNet = nn.Sequential(
 			nn.Linear(NUM_CLUSTERS, hidden),
 			nn.BatchNorm1d(hidden),
 			nn.ReLU(),
 			nn.Linear(hidden, NUM_CLUSTERS),
 			nn.BatchNorm1d(NUM_CLUSTERS),
-			nn.ReLU()
+			nn.Softmax(dim=1)
 			# nn.Linear(NUM_CLUSTERS, NUM_CLUSTERS),
 			# nn.BatchNorm1d(NUM_CLUSTERS),
 			# nn.ReLU()
@@ -195,7 +196,7 @@ class ClusterNet(nn.Module):
 		return torch.norm(C - C_prime, p='fro') + gamma * torch.norm(P, p='fro')
 		
 #Model training
-model = ClusterNet()
+model = ClusterNet(papers_vec.shape)
 optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
 
 for epoch in range(num_epochs):
@@ -203,10 +204,10 @@ for epoch in range(num_epochs):
 
 	mean_loss = []
 	for i in range(0, len(p), batch_size):
-		P = papers_vec[p[i:i+batch_size]]
+		P = model.P_prime[p[i:i+batch_size]]
 		L = cooc[:, p[i:i+batch_size]]
 		C = claims_vec
-		P = Variable(P, requires_grad=False)
+		#P = Variable(P, requires_grad=True)
 		L = Variable(L, requires_grad=False)   
 		C = Variable(C, requires_grad=False)
 
@@ -218,7 +219,7 @@ for epoch in range(num_epochs):
 		loss.backward()
 		optimizer.step()
 
-	if epoch%100 == 0:
+	if epoch%5 == 0:
 		print(sum(mean_loss)/len(mean_loss))
 
 papers_vec = pd.DataFrame(model(papers_vec).detach().numpy(), index=papers_vec_index)
