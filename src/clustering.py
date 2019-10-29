@@ -154,18 +154,29 @@ def data_preprocessing(clustering, passage='prelude', use_cache=True):
 
 cooc, claims_vec, papers_vec = data_preprocessing('PCA-GMM', use_cache=True)
 papers_vec_index = papers_vec.index
-cooc = torch.Tensor(cooc.values.astype(float))
-claims_vec = torch.Tensor(claims_vec.values.astype(float))
+cooc = cooc.values
+claims_vec = claims_vec.values
+cooc, index = np.unique(cooc, axis=0, return_index=True)
+claims_vec = claims_vec[index]
+
+cooc = torch.Tensor(cooc.astype(float))
+claims_vec = torch.Tensor(claims_vec.astype(float))
 papers_vec = torch.Tensor(papers_vec.values.astype(float))
 
 
+
+# claims_vec = torch.Tensor([[0.6, 0.1, 0.1, 0.1, 0.1], [0.1, 0.1, 0.1, 0.1, 0.6]])
+# cooc = torch.Tensor([[1, 0, 0, 0], [0, 0, 1, 0]])
+# papers_vec = torch.Tensor([[1, 0, 0, 0, 0], [0, 0, 0, 0, 1], [0, 0, 0, 0, 1], [0, 0, 0, 0, 1]])
+# NUM_CLUSTERS = 10
+
 # Hyper Parameters
-num_epochs = 5000
+num_epochs = 50
 learning_rate = 1.e-3
 weight_decay = 0.0
 hidden = 50
-gamma = 1.e-5
-batch_size = 2048
+gamma = 0#1.e-5
+batch_size = 256#2048
 
 class ClusterNet(nn.Module):
 	def __init__(self, shape):
@@ -174,15 +185,15 @@ class ClusterNet(nn.Module):
 		self.P_prime = nn.Parameter(nn.init.xavier_normal_(torch.Tensor(shape[0], shape[1])), requires_grad=True)
 		
 		self.papersNet = nn.Sequential(
-			nn.Linear(NUM_CLUSTERS, hidden),
-			nn.BatchNorm1d(hidden),
-			nn.ReLU(),
-			nn.Linear(hidden, NUM_CLUSTERS),
-			nn.BatchNorm1d(NUM_CLUSTERS),
-			nn.Softmax(dim=1)
-			# nn.Linear(NUM_CLUSTERS, NUM_CLUSTERS),
+			# nn.Linear(NUM_CLUSTERS, hidden),
+			# nn.BatchNorm1d(hidden),
+			# nn.ReLU(),
+			# nn.Linear(hidden, NUM_CLUSTERS),
 			# nn.BatchNorm1d(NUM_CLUSTERS),
-			# nn.ReLU()
+			# nn.Softmax(dim=1)
+			nn.Linear(NUM_CLUSTERS, NUM_CLUSTERS),
+			nn.BatchNorm1d(NUM_CLUSTERS),
+			nn.Softmax(dim=1),
 		)
 		
 	def forward(self, P):
@@ -192,8 +203,8 @@ class ClusterNet(nn.Module):
 
 		C_prime = L @ P
 
-		#return nn.MSELoss()(C_prime, C) + gamma * torch.norm(C_prime, p='fro')
-		return torch.norm(C - C_prime, p='fro') + gamma * torch.norm(P, p='fro')
+		return torch.norm(C_prime - C, p='fro') #+ gamma * torch.norm(P, p='fro')
+		#return nn.MSELoss()(C_prime, C) #+ gamma * torch.norm(C_prime, p='fro')
 		
 #Model training
 model = ClusterNet(papers_vec.shape)
@@ -205,9 +216,10 @@ for epoch in range(num_epochs):
 	mean_loss = []
 	for i in range(0, len(p), batch_size):
 		P = model.P_prime[p[i:i+batch_size]]
+		#P = papers_vec[p[i:i+batch_size]]
 		L = cooc[:, p[i:i+batch_size]]
 		C = claims_vec
-		#P = Variable(P, requires_grad=True)
+		P = Variable(P, requires_grad=True)
 		L = Variable(L, requires_grad=False)   
 		C = Variable(C, requires_grad=False)
 
@@ -219,8 +231,10 @@ for epoch in range(num_epochs):
 		loss.backward()
 		optimizer.step()
 
-	if epoch%5 == 0:
+	if epoch%1 == 0:
 		print(sum(mean_loss)/len(mean_loss))
+
+
 
 papers_vec = pd.DataFrame(model(papers_vec).detach().numpy(), index=papers_vec_index)
 papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_learnt'+'.tsv.bz2', sep='\t')
