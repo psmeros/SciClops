@@ -107,10 +107,15 @@ def transform_to_vec(papers, claims, reduction_alg, reduction_dim=None, passage=
 	return papers_vec, claims_vec
 
 def transform_to_clusters(papers_vec, claims_vec, prior):
+	claims_vec_index = claims_vec.index
+	papers_vec = papers_vec.values
+	claims_vec = claims_vec.values
 	gmm = GaussianMixture(NUM_CLUSTERS,weights_init=prior).fit(papers_vec).fit(claims_vec)
 
 	papers_vec = gmm.predict_proba(papers_vec)
 	claims_vec = gmm.predict_proba(claims_vec)
+	
+	pd.DataFrame(claims_vec, index=claims_vec_index).to_csv(sciclops_dir + 'cache/claims_vec_clusters.tsv.bz2', sep='\t')
 	
 	return papers_vec, claims_vec
 
@@ -118,7 +123,7 @@ def transform_to_clusters(papers_vec, claims_vec, prior):
 def data_preprocessing(reduction_alg, reduction_dim=None, use_cache=True):
 	if use_cache:
 		cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim'])
-		claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col=['url', 'claim'])
+		claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
 		papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col='url')
 
 	else:
@@ -160,7 +165,7 @@ def data_preprocessing(reduction_alg, reduction_dim=None, use_cache=True):
 		claims_vec.to_csv(sciclops_dir + 'cache/claims_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t')
 		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t')
 		
-	return cooc, claims_vec, papers_vec
+	return cooc, papers_vec, claims_vec
 
 
 # Hyper Parameters
@@ -172,7 +177,7 @@ gamma = 1.e-0
 batch_size = 256#2048
 
 class ClusterNet(nn.Module):
-	def __init__(self, shape):
+	def __init__(self):
 		super(ClusterNet, self).__init__()
 		
 		self.papersNet = nn.Sequential(
@@ -195,35 +200,22 @@ class ClusterNet(nn.Module):
 		return torch.norm(C_prime - C, p='fro')
 ############################### ######### ###############################
 
-if __name__ == "__main__":
-	cooc, claims_vec, papers_vec = data_preprocessing('PCA', 2, use_cache=False)
-	# cooc, claims_vec, papers_vec = data_preprocessing('T-SNE', 2, use_cache=False)
-	# cooc, claims_vec, papers_vec = data_preprocessing('PCA', 10, use_cache=False)
-	# cooc, claims_vec, papers_vec = data_preprocessing('T-SNE', 10, use_cache=False)
-
-
-def train():
-	papers_vec_index = papers_vec.index
-	cooc = cooc.values
-	claims_vec = claims_vec.values
-	cooc, index = np.unique(cooc, axis=0, return_index=True)
-	claims_vec = claims_vec[index]
+def align_clusters(cooc, papers_vec, claims_vec):
 
 	cooc = torch.Tensor(cooc.astype(float))
+	papers_vec = torch.Tensor(papers_vec.astype(float))
 	claims_vec = torch.Tensor(claims_vec.astype(float))
-	papers_vec = torch.Tensor(papers_vec.values.astype(float))
 
-
+	# cooc, index = np.unique(cooc, axis=0, return_index=True)
+	# claims_vec = claims_vec[index]
 
 	# claims_vec = torch.Tensor([[0.6, 0.1, 0.1, 0.1, 0.1], [0.1, 0.1, 0.1, 0.1, 0.6]])
 	# cooc = torch.Tensor([[1, 0, 0, 0], [0, 0, 1, 0]])
 	# papers_vec = torch.Tensor([[1, 0, 0, 0, 0], [0, 0, 0, 0, 1], [0, 0, 0, 0, 1], [0, 0, 0, 0, 1]])
 	# NUM_CLUSTERS = 10
-
-
 			
 	#Model training
-	model = ClusterNet(papers_vec.shape)
+	model = ClusterNet()
 	optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
 
 	for epoch in range(num_epochs):
@@ -250,7 +242,19 @@ def train():
 		if epoch%1 == 0:
 			print(sum(mean_loss)/len(mean_loss))
 
+	papers_vec = model(papers_vec).detach().numpy()
+	return papers_vec
 
 
-	papers_vec = pd.DataFrame(model(papers_vec).detach().numpy(), index=papers_vec_index)
-	papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_learnt'+'.tsv.bz2', sep='\t')
+if __name__ == "__main__":
+	cooc, papers_vec, claims_vec = data_preprocessing('PCA', 2, use_cache=True)
+	papers_vec_index = papers_vec.index
+	cooc = cooc.values
+
+	prior = [1/NUM_CLUSTERS for _ in range(NUM_CLUSTERS)]
+	for _ in range(2):
+		papers_vec, claims_vec = transform_to_clusters(papers_vec, claims_vec, prior)
+
+		papers_vec = align_clusters(cooc, papers_vec, claims_vec)
+		papers_vec = pd.DataFrame(papers_vec, index=papers_vec_index)
+		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_clusters.tsv.bz2', sep='\t')
