@@ -62,7 +62,7 @@ def clean_paper(text):
 	return text
 
 
-def transform_papers(papers, passage):
+def transform_papers(papers, passage='prelude'):
 	print('transforming papers...')
 	
 	if passage == 'title':
@@ -73,28 +73,29 @@ def transform_papers(papers, passage):
 		papers_text = papers.title + ' ' + papers.full_text
 	
 	papers_vec = papers_text.parallel_apply(lambda x: nlp(' '.join(clean_paper(x))).vector).apply(pd.Series).values
-	papers_vec = TruncatedSVD(NUM_CLUSTERS).fit_transform(papers_vec)
+	#papers_vec = TruncatedSVD(NUM_CLUSTERS).fit_transform(papers_vec)
 	#papers_vec = GaussianMixture(NUM_CLUSTERS).fit(papers_vec).predict_proba(papers_vec)
 	papers_vec = pd.DataFrame(papers_vec, index=papers.index)
 
 	return papers_vec
 
-def transform_claims(claims, clustering):
+def transform_claims(claims):
 	print('transforming claims...')
-
-	if clustering == 'GSDMM':
-		mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
-		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
-		claims_vec = np.zeros((len(claims), NUM_CLUSTERS))
-		claims_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
-	elif clustering == 'PCA-GMM':
-		claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
-		claims_vec = TruncatedSVD(2).fit_transform(claims_vec)	
-		claims_vec = GaussianMixture(NUM_CLUSTERS).fit(claims_vec).predict_proba(claims_vec)
-	elif clustering == 'TSNE-GMM':
-		claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
-		claims_vec = TSNE().fit_transform(claims_vec)	
-		claims_vec = GaussianMixture(NUM_CLUSTERS).fit(claims_vec).predict_proba(claims_vec)
+	claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
+	
+	# if clustering == 'GSDMM':
+	# 	mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
+	# 	claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
+	# 	claims_vec = np.zeros((len(claims), NUM_CLUSTERS))
+	# 	claims_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
+	# elif clustering == 'PCA-GMM':
+	# 	claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
+	# 	claims_vec = TruncatedSVD(2).fit_transform(claims_vec)	
+	# 	claims_vec = GaussianMixture(NUM_CLUSTERS).fit(claims_vec).predict_proba(claims_vec)
+	# elif clustering == 'TSNE-GMM':
+	# 	claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
+	# 	claims_vec = TSNE().fit_transform(claims_vec)	
+	# 	claims_vec = GaussianMixture(NUM_CLUSTERS).fit(claims_vec).predict_proba(claims_vec)
 
 	claims_vec = pd.DataFrame(claims_vec, index=claims.index)
 	return claims_vec
@@ -116,6 +117,17 @@ def data_preprocessing(clustering, passage='prelude', use_cache=True):
 		articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
 		claims = articles[['url', 'quotes']].drop_duplicates(subset='url')
 
+		G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
+		G.remove_nodes_from(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
+		
+		claims['refs'] = claims.url.parallel_apply(lambda u: list(G.successors(u)))
+		refs = [e for l in claims['refs'].to_list() for e in l]
+		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
+		papers = papers[papers['url'].isin(refs)]
+
+		tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
+		claims['popularity'] = claims.url.parallel_apply(lambda u: sum([tweets.loc[t]['popularity'] for t in G.predecessors(u) if t in tweets.index]))
+
 		claims.quotes = claims.quotes.parallel_apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
 		claims = claims.explode('quotes').rename(columns={'quotes': 'claim'})
 		claims = claims[~claims['claim'].isna()]
@@ -125,22 +137,14 @@ def data_preprocessing(clustering, passage='prelude', use_cache=True):
 		claims['clean_claim'] = claims['claim'].parallel_apply(clean_claim)
 		claims = claims[claims['clean_claim'].str.len() != 0]
 
-		G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
-		G.remove_nodes_from(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
-		claims['refs'] = claims.url.parallel_apply(lambda u: set(G[u]))
-		refs = [e for l in claims['refs'].to_list() for e in l]
-
-		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
-		papers = papers[papers['url'].isin(refs)]
-
-		claims = claims.set_index(['url', 'claim'])
+		claims = claims.set_index(['url', 'claim', 'popularity'])
 		papers = papers.set_index('url')
 
 		mlb = MultiLabelBinarizer()
 		cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
 
-		papers_vec = transform_papers(papers, passage)
-		claims_vec = transform_claims(claims, clustering)
+		papers_vec = transform_papers(papers)
+		claims_vec = transform_claims(claims)
 
 		#caching    
 		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
@@ -175,14 +179,14 @@ num_epochs = 50
 learning_rate = 1.e-3
 weight_decay = 0.0
 hidden = 50
-gamma = 0#1.e-5
+gamma = 1.e-0
 batch_size = 256#2048
 
 class ClusterNet(nn.Module):
 	def __init__(self, shape):
 		super(ClusterNet, self).__init__()
 		
-		self.P_prime = nn.Parameter(nn.init.xavier_normal_(torch.Tensor(shape[0], shape[1])), requires_grad=True)
+		#self.P_prime = nn.Parameter(nn.init.xavier_normal_(torch.Tensor(shape[0], shape[1])), requires_grad=True)
 		
 		self.papersNet = nn.Sequential(
 			# nn.Linear(NUM_CLUSTERS, hidden),
@@ -203,7 +207,7 @@ class ClusterNet(nn.Module):
 
 		C_prime = L @ P
 
-		return torch.norm(C_prime - C, p='fro') #+ gamma * torch.norm(P, p='fro')
+		return torch.norm(C_prime - C, p='fro') #+ gamma * torch.norm(C_prime, p='fro')
 		#return nn.MSELoss()(C_prime, C) #+ gamma * torch.norm(C_prime, p='fro')
 		
 #Model training
@@ -215,8 +219,8 @@ for epoch in range(num_epochs):
 
 	mean_loss = []
 	for i in range(0, len(p), batch_size):
-		P = model.P_prime[p[i:i+batch_size]]
-		#P = papers_vec[p[i:i+batch_size]]
+		#P = model.P_prime[p[i:i+batch_size]]
+		P = papers_vec[p[i:i+batch_size]]
 		L = cooc[:, p[i:i+batch_size]]
 		C = claims_vec
 		P = Variable(P, requires_grad=True)
