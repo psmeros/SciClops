@@ -62,54 +62,64 @@ def clean_paper(text):
 	return text
 
 
-def transform_papers(papers, passage='prelude'):
-	print('transforming papers...')
-	
+def transform_to_vec(papers, claims, reduction_alg, reduction_dim=None, passage='prelude'):
 	if passage == 'title':
-		papers_text = papers.title
+		papers['passage'] = papers.title
 	elif passage == 'prelude':
-		papers_text = papers.title + ' ' + papers.full_text.apply(lambda w: w.split('\n')[0])
+		papers['passage'] = papers.title + ' ' + papers.full_text.apply(lambda w: w.split('\n')[0])
 	elif passage == 'full_text':
-		papers_text = papers.title + ' ' + papers.full_text
+		papers['passage'] = papers.title + ' ' + papers.full_text
 	
-	papers_vec = papers_text.parallel_apply(lambda x: nlp(' '.join(clean_paper(x))).vector).apply(pd.Series).values
-	#papers_vec = TruncatedSVD(NUM_CLUSTERS).fit_transform(papers_vec)
-	#papers_vec = GaussianMixture(NUM_CLUSTERS).fit(papers_vec).predict_proba(papers_vec)
+	
+	print('transforming...')
+	if reduction_alg == 'GSDMM':
+		mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
+		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
+		claims_vec = np.zeros((len(claims), NUM_CLUSTERS))
+		claims_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
+
+		mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
+		papers['cluster'] = mgp.fit(papers['passage'], len(set([e for l in papers['passage'].tolist() for e in l])))
+		papers_vec = np.zeros((len(papers), NUM_CLUSTERS))
+		papers_vec[np.arange(len(papers)), papers.cluster.to_numpy()] = 1
+
+	elif reduction_alg == 'LDA':
+		#TODO
+		pass
+
+	elif reduction_alg =='PCA':
+		papers_vec = papers['passage'].parallel_apply(lambda x: nlp(' '.join(clean_paper(x))).vector).apply(pd.Series).values
+		claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
+		pca = TruncatedSVD(reduction_dim).fit(papers_vec).fit(claims_vec)
+		papers_vec = pca.transform(papers_vec)
+		claims_vec = pca.transform(claims_vec)
+
+	elif reduction_alg =='T-SNE':
+		papers_vec = papers['passage'].parallel_apply(lambda x: nlp(' '.join(clean_paper(x))).vector).apply(pd.Series).values
+		claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
+		tsne = TSNE(reduction_dim).fit(papers_vec).fit(claims_vec)
+		papers_vec = tsne.transform(papers_vec)
+		claims_vec = tsne.transform(claims_vec)
+
 	papers_vec = pd.DataFrame(papers_vec, index=papers.index)
-
-	return papers_vec
-
-def transform_claims(claims):
-	print('transforming claims...')
-	claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
-	
-	# if clustering == 'GSDMM':
-	# 	mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
-	# 	claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
-	# 	claims_vec = np.zeros((len(claims), NUM_CLUSTERS))
-	# 	claims_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
-	# elif clustering == 'PCA-GMM':
-	# 	claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
-	# 	claims_vec = TruncatedSVD(2).fit_transform(claims_vec)	
-	# 	claims_vec = GaussianMixture(NUM_CLUSTERS).fit(claims_vec).predict_proba(claims_vec)
-	# elif clustering == 'TSNE-GMM':
-	# 	claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
-	# 	claims_vec = TSNE().fit_transform(claims_vec)	
-	# 	claims_vec = GaussianMixture(NUM_CLUSTERS).fit(claims_vec).predict_proba(claims_vec)
-
 	claims_vec = pd.DataFrame(claims_vec, index=claims.index)
-	return claims_vec
+
+	return papers_vec, claims_vec
+
+def transform_to_clusters(papers_vec, claims_vec, prior):
+	gmm = GaussianMixture(NUM_CLUSTERS,weights_init=prior).fit(papers_vec).fit(claims_vec)
+
+	papers_vec = gmm.predict_proba(papers_vec)
+	claims_vec = gmm.predict_proba(claims_vec)
+	
+	return papers_vec, claims_vec
 
 
-def data_preprocessing(clustering, passage='prelude', use_cache=True):
-	'''
-	:param representation: bow, embeddings, bow_embeddings
-	:param passage: title, prelude, full_text (filter for paper text)
-	'''
+def data_preprocessing(reduction_alg, reduction_dim=None, use_cache=True):
 	if use_cache:
 		cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim'])
-		claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_vec.tsv.bz2', sep='\t', index_col=['url', 'claim'])
-		papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+'_'+passage+'.tsv.bz2', sep='\t', index_col='url')
+		claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col=['url', 'claim'])
+		papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col='url')
 
 	else:
 		pandarallel.initialize()
@@ -143,36 +153,15 @@ def data_preprocessing(clustering, passage='prelude', use_cache=True):
 		mlb = MultiLabelBinarizer()
 		cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
 
-		papers_vec = transform_papers(papers)
-		claims_vec = transform_claims(claims)
-
+		papers_vec, claims_vec = transform_to_vec(papers, claims, reduction_alg, reduction_dim)
+		
 		#caching    
 		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
-		claims_vec.to_csv(sciclops_dir + 'cache/claims_vec.tsv.bz2', sep='\t')
-		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+'_'+passage+'.tsv.bz2', sep='\t')
+		claims_vec.to_csv(sciclops_dir + 'cache/claims_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t')
+		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t')
 		
 	return cooc, claims_vec, papers_vec
 
-
-############################### ######### ###############################
-
-cooc, claims_vec, papers_vec = data_preprocessing('PCA-GMM', use_cache=True)
-papers_vec_index = papers_vec.index
-cooc = cooc.values
-claims_vec = claims_vec.values
-cooc, index = np.unique(cooc, axis=0, return_index=True)
-claims_vec = claims_vec[index]
-
-cooc = torch.Tensor(cooc.astype(float))
-claims_vec = torch.Tensor(claims_vec.astype(float))
-papers_vec = torch.Tensor(papers_vec.values.astype(float))
-
-
-
-# claims_vec = torch.Tensor([[0.6, 0.1, 0.1, 0.1, 0.1], [0.1, 0.1, 0.1, 0.1, 0.6]])
-# cooc = torch.Tensor([[1, 0, 0, 0], [0, 0, 1, 0]])
-# papers_vec = torch.Tensor([[1, 0, 0, 0, 0], [0, 0, 0, 0, 1], [0, 0, 0, 0, 1], [0, 0, 0, 0, 1]])
-# NUM_CLUSTERS = 10
 
 # Hyper Parameters
 num_epochs = 50
@@ -185,8 +174,6 @@ batch_size = 256#2048
 class ClusterNet(nn.Module):
 	def __init__(self, shape):
 		super(ClusterNet, self).__init__()
-		
-		#self.P_prime = nn.Parameter(nn.init.xavier_normal_(torch.Tensor(shape[0], shape[1])), requires_grad=True)
 		
 		self.papersNet = nn.Sequential(
 			# nn.Linear(NUM_CLUSTERS, hidden),
@@ -204,41 +191,66 @@ class ClusterNet(nn.Module):
 		return self.papersNet(P)	
 
 	def loss(self, P, L, C):
-
 		C_prime = L @ P
+		return torch.norm(C_prime - C, p='fro')
+############################### ######### ###############################
 
-		return torch.norm(C_prime - C, p='fro') #+ gamma * torch.norm(C_prime, p='fro')
-		#return nn.MSELoss()(C_prime, C) #+ gamma * torch.norm(C_prime, p='fro')
-		
-#Model training
-model = ClusterNet(papers_vec.shape)
-optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
+if __name__ == "__main__":
+	cooc, claims_vec, papers_vec = data_preprocessing('PCA', 2, use_cache=False)
+	# cooc, claims_vec, papers_vec = data_preprocessing('T-SNE', 2, use_cache=False)
+	# cooc, claims_vec, papers_vec = data_preprocessing('PCA', 10, use_cache=False)
+	# cooc, claims_vec, papers_vec = data_preprocessing('T-SNE', 10, use_cache=False)
 
-for epoch in range(num_epochs):
-	p = np.random.permutation(len(papers_vec))
 
-	mean_loss = []
-	for i in range(0, len(p), batch_size):
-		#P = model.P_prime[p[i:i+batch_size]]
-		P = papers_vec[p[i:i+batch_size]]
-		L = cooc[:, p[i:i+batch_size]]
-		C = claims_vec
-		P = Variable(P, requires_grad=True)
-		L = Variable(L, requires_grad=False)   
-		C = Variable(C, requires_grad=False)
+def train():
+	papers_vec_index = papers_vec.index
+	cooc = cooc.values
+	claims_vec = claims_vec.values
+	cooc, index = np.unique(cooc, axis=0, return_index=True)
+	claims_vec = claims_vec[index]
 
-		P = model(P)
-		loss = model.loss(P, L, C)
-		mean_loss.append(loss.data.item())
-
-		optimizer.zero_grad()
-		loss.backward()
-		optimizer.step()
-
-	if epoch%1 == 0:
-		print(sum(mean_loss)/len(mean_loss))
+	cooc = torch.Tensor(cooc.astype(float))
+	claims_vec = torch.Tensor(claims_vec.astype(float))
+	papers_vec = torch.Tensor(papers_vec.values.astype(float))
 
 
 
-papers_vec = pd.DataFrame(model(papers_vec).detach().numpy(), index=papers_vec_index)
-papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_learnt'+'.tsv.bz2', sep='\t')
+	# claims_vec = torch.Tensor([[0.6, 0.1, 0.1, 0.1, 0.1], [0.1, 0.1, 0.1, 0.1, 0.6]])
+	# cooc = torch.Tensor([[1, 0, 0, 0], [0, 0, 1, 0]])
+	# papers_vec = torch.Tensor([[1, 0, 0, 0, 0], [0, 0, 0, 0, 1], [0, 0, 0, 0, 1], [0, 0, 0, 0, 1]])
+	# NUM_CLUSTERS = 10
+
+
+			
+	#Model training
+	model = ClusterNet(papers_vec.shape)
+	optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
+
+	for epoch in range(num_epochs):
+		p = np.random.permutation(len(papers_vec))
+
+		mean_loss = []
+		for i in range(0, len(p), batch_size):
+			#P = model.P_prime[p[i:i+batch_size]]
+			P = papers_vec[p[i:i+batch_size]]
+			L = cooc[:, p[i:i+batch_size]]
+			C = claims_vec
+			P = Variable(P, requires_grad=True)
+			L = Variable(L, requires_grad=False)   
+			C = Variable(C, requires_grad=False)
+
+			P = model(P)
+			loss = model.loss(P, L, C)
+			mean_loss.append(loss.data.item())
+
+			optimizer.zero_grad()
+			loss.backward()
+			optimizer.step()
+
+		if epoch%1 == 0:
+			print(sum(mean_loss)/len(mean_loss))
+
+
+
+	papers_vec = pd.DataFrame(model(papers_vec).detach().numpy(), index=papers_vec_index)
+	papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_learnt'+'.tsv.bz2', sep='\t')
