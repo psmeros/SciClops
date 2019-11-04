@@ -135,10 +135,8 @@ def data_preprocessing(reduction_alg, reduction_dim=None, use_cache=True):
 		G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
 		G.remove_nodes_from(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
 		
-		claims['refs'] = claims.url.parallel_apply(lambda u: list(G.successors(u)))
-		refs = [e for l in claims['refs'].to_list() for e in l]
 		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
-		papers = papers[papers['url'].isin(refs)]
+		claims['refs'] = claims.url.parallel_apply(lambda u: list(G.successors(u)))
 
 		tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
 		claims['popularity'] = claims.url.parallel_apply(lambda u: sum([tweets.loc[t]['popularity'] for t in G.predecessors(u) if t in tweets.index]))
@@ -151,6 +149,9 @@ def data_preprocessing(reduction_alg, reduction_dim=None, use_cache=True):
 		print('cleaning...')
 		claims['clean_claim'] = claims['claim'].parallel_apply(clean_claim)
 		claims = claims[claims['clean_claim'].str.len() != 0]
+
+		refs = set([e for l in claims['refs'].to_list() for e in l])
+		papers = papers[papers['url'].isin(refs)]
 
 		claims = claims.set_index(['url', 'claim', 'popularity'])
 		papers = papers.set_index('url')
@@ -247,7 +248,7 @@ def align_clusters(cooc, papers_vec, claims_vec):
 
 
 if __name__ == "__main__":
-	cooc, papers_vec, claims_vec = data_preprocessing('PCA', 2, use_cache=True)
+	cooc, papers_vec, claims_vec = data_preprocessing('PCA', 2, use_cache=False)
 	papers_vec_index = papers_vec.index
 	cooc = cooc.values
 
