@@ -4,6 +4,10 @@ from pathlib import Path
 import pandas as pd
 from nltk.corpus import stopwords
 from pandarallel import pandarallel
+import seaborn as sns
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+from matplotlib.ticker import ScalarFormatter
 
 import pke
 
@@ -11,6 +15,7 @@ import pke
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
+hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
