@@ -92,51 +92,45 @@ def transform_to_vec(papers, claims, reduction_alg, reduction_dim=None, passage=
 
 	return papers_vec, claims_vec
 
-def matrix_preparation(reduction_alg, reduction_dim=None, use_cache=True):
-	if use_cache:
-		cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
-		claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
-		papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col='url')
+def matrix_preparation(reduction_alg, reduction_dim=None):
+	pandarallel.initialize()
+	
+	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
+	claims = articles[['url', 'quotes']].drop_duplicates(subset='url')
 
-	else:
-		pandarallel.initialize()
-		
-		articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
-		claims = articles[['url', 'quotes']].drop_duplicates(subset='url')
+	G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
+	G.remove_nodes_from(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
+	
+	papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
+	refs = set(papers['url'].unique())
+	claims['refs'] = claims.url.parallel_apply(lambda u: set(G.successors(u)).intersection(refs))
 
-		G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
-		G.remove_nodes_from(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
-		
-		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
-		refs = set(papers['url'].unique())
-		claims['refs'] = claims.url.parallel_apply(lambda u: set(G.successors(u)).intersection(refs))
+	tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
+	claims['popularity'] = claims.url.parallel_apply(lambda u: sum([tweets.loc[t]['popularity'] for t in G.predecessors(u) if t in tweets.index]))
 
-		tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
-		claims['popularity'] = claims.url.parallel_apply(lambda u: sum([tweets.loc[t]['popularity'] for t in G.predecessors(u) if t in tweets.index]))
+	claims.quotes = claims.quotes.parallel_apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
+	claims = claims.explode('quotes').rename(columns={'quotes': 'claim'})
+	claims = claims[~claims['claim'].isna()]
 
-		claims.quotes = claims.quotes.parallel_apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
-		claims = claims.explode('quotes').rename(columns={'quotes': 'claim'})
-		claims = claims[~claims['claim'].isna()]
+	#cleaning
+	print('cleaning...')
+	claims['clean_claim'] = claims['claim'].parallel_apply(clean_claim)
+	claims = claims[claims['clean_claim'].str.len() != 0]
+	refs = set([e for l in claims['refs'].to_list() for e in l])
+	papers = papers[papers['url'].isin(refs)]
 
-		#cleaning
-		print('cleaning...')
-		claims['clean_claim'] = claims['claim'].parallel_apply(clean_claim)
-		claims = claims[claims['clean_claim'].str.len() != 0]
-		refs = set([e for l in claims['refs'].to_list() for e in l])
-		papers = papers[papers['url'].isin(refs)]
+	claims = claims.set_index(['url', 'claim', 'popularity'])
+	papers = papers.set_index('url')
 
-		claims = claims.set_index(['url', 'claim', 'popularity'])
-		papers = papers.set_index('url')
+	mlb = MultiLabelBinarizer()
+	cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
 
-		mlb = MultiLabelBinarizer()
-		cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
-
-		papers_vec, claims_vec = transform_to_vec(papers, claims, reduction_alg, reduction_dim)
-		
-		#caching    
-		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
-		claims_vec.to_csv(sciclops_dir + 'cache/claims_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t')
-		papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t')
+	papers_vec, claims_vec = transform_to_vec(papers, claims, reduction_alg, reduction_dim)
+	
+	#caching    
+	cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
+	claims_vec.to_csv(sciclops_dir + 'cache/claims_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t')
+	papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t')
 		
 	return cooc, papers_vec, claims_vec
 
@@ -145,4 +139,4 @@ def matrix_preparation(reduction_alg, reduction_dim=None, use_cache=True):
 
 
 if __name__ == "__main__":
-	matrix_preparation('PCA', 2, use_cache=False)
+	matrix_preparation('PCA', 2)

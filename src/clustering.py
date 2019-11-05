@@ -1,21 +1,11 @@
 from pathlib import Path
 
-import networkx as nx
 import numpy as np
 import pandas as pd
-import spacy
 import torch
 import torch.nn as nn
-
-from pandarallel import pandarallel
-from sklearn.decomposition import TruncatedSVD
-from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.mixture import GaussianMixture
-from sklearn.manifold import TSNE
-from torch.autograd import Variable
 from torch import optim
-
-from matrix_preparation import matrix_preparation
 
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
@@ -25,6 +15,12 @@ NUM_CLUSTERS = 20
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
+
+def load_matrices(reduction_alg, reduction_dim):
+	cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
+	claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
+	papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col='url')
+	return cooc, papers_vec, claims_vec
 
 def transform_to_clusters(papers_vec, claims_vec, prior):
 	gmm = GaussianMixture(NUM_CLUSTERS,weights_init=prior).fit(papers_vec).fit(claims_vec)
@@ -36,7 +32,6 @@ def transform_to_clusters(papers_vec, claims_vec, prior):
 # Hyper Parameters
 num_epochs = 10
 learning_rate = 1.e-3
-weight_decay = 0.0
 hidden = 50
 batch_size = 512
 
@@ -74,10 +69,9 @@ def align_clusters(cooc, papers_vec, claims_vec):
 	papers_vec = torch.Tensor(papers_vec.astype(float))
 	claims_vec = torch.Tensor(claims_vec.astype(float))
 	
-	print (cooc.shape, papers_vec.shape, claims_vec.shape)
 	#Model training
 	model = ClusterNet()
-	optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
+	optimizer = optim.Adam(model.parameters(), lr=learning_rate) 
 
 	for epoch in range(num_epochs):
 		p = np.random.permutation(len(papers_vec))
@@ -103,8 +97,11 @@ def align_clusters(cooc, papers_vec, claims_vec):
 	return papers_vec
 
 
+
+
 if __name__ == "__main__":
-	cooc, papers_vec, claims_vec = matrix_preparation('PCA', 2, use_cache=True)
+
+	cooc, papers_vec, claims_vec = load_matrices('PCA', 2)
 
 	prior = [1/NUM_CLUSTERS for _ in range(NUM_CLUSTERS)]
 	
