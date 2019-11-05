@@ -21,11 +21,7 @@ from matrix_preparation import matrix_preparation
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
-nlp = spacy.load('en_core_web_lg')
-hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
-
-NUM_CLUSTERS = 10
-CLAIM_THRESHOLD = 10
+NUM_CLUSTERS = 20
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -38,20 +34,26 @@ def transform_to_clusters(papers_vec, claims_vec, prior):
 	return papers_vec, claims_vec
 
 # Hyper Parameters
-num_epochs = 50
+num_epochs = 10
 learning_rate = 1.e-3
 weight_decay = 0.0
 hidden = 50
-gamma = 1.e-0
-batch_size = 256#2048
+batch_size = 512
 
 class ClusterNet(nn.Module):
 	def __init__(self):
 		super(ClusterNet, self).__init__()
 		
 		self.papersNet = nn.Sequential(
-			nn.Linear(NUM_CLUSTERS, NUM_CLUSTERS),
-			nn.BatchNorm1d(NUM_CLUSTERS),
+			# nn.Linear(NUM_CLUSTERS, hidden),
+			# nn.BatchNorm1d(hidden),
+			# nn.ReLU(),
+			# nn.Linear(hidden, NUM_CLUSTERS),
+			# nn.BatchNorm1d(NUM_CLUSTERS),
+			# nn.Softmax(dim=1),
+			nn.Linear(NUM_CLUSTERS, hidden),
+			nn.Linear(hidden, NUM_CLUSTERS),
+			#nn.BatchNorm1d(NUM_CLUSTERS),
 			nn.Softmax(dim=1),
 		)
 		
@@ -65,18 +67,14 @@ class ClusterNet(nn.Module):
 
 def align_clusters(cooc, papers_vec, claims_vec):
 
+	cooc, index = np.unique(cooc, axis=0, return_index=True)
+	claims_vec = claims_vec[index]
+
 	cooc = torch.Tensor(cooc.astype(float))
 	papers_vec = torch.Tensor(papers_vec.astype(float))
 	claims_vec = torch.Tensor(claims_vec.astype(float))
-
-	# cooc, index = np.unique(cooc, axis=0, return_index=True)
-	# claims_vec = claims_vec[index]
-
-	# claims_vec = torch.Tensor([[0.6, 0.1, 0.1, 0.1, 0.1], [0.1, 0.1, 0.1, 0.1, 0.6]])
-	# cooc = torch.Tensor([[1, 0, 0, 0], [0, 0, 1, 0]])
-	# papers_vec = torch.Tensor([[1, 0, 0, 0, 0], [0, 0, 0, 0, 1], [0, 0, 0, 0, 1], [0, 0, 0, 0, 1]])
-	# NUM_CLUSTERS = 10
-			
+	
+	print (cooc.shape, papers_vec.shape, claims_vec.shape)
 	#Model training
 	model = ClusterNet()
 	optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
@@ -86,25 +84,21 @@ def align_clusters(cooc, papers_vec, claims_vec):
 
 		mean_loss = []
 		for i in range(0, len(p), batch_size):
-			#P = model.P_prime[p[i:i+batch_size]]
 			P = papers_vec[p[i:i+batch_size]]
 			L = cooc[:, p[i:i+batch_size]]
 			C = claims_vec
-			P = Variable(P, requires_grad=True)
-			L = Variable(L, requires_grad=False)   
-			C = Variable(C, requires_grad=False)
-
-			P = model(P)
-			loss = model.loss(P, L, C)
-			mean_loss.append(loss.data.item())
 
 			optimizer.zero_grad()
+			P = model(P)
+			loss = model.loss(P, L, C)
+			mean_loss.append(loss.detach().numpy())
 			loss.backward()
 			optimizer.step()
 
 		if epoch%1 == 0:
 			print(sum(mean_loss)/len(mean_loss))
 
+	print('Reconstruction Error',model.loss(model(papers_vec), cooc, claims_vec))
 	papers_vec = model(papers_vec).detach().numpy()
 	return papers_vec
 
@@ -114,7 +108,7 @@ if __name__ == "__main__":
 
 	prior = [1/NUM_CLUSTERS for _ in range(NUM_CLUSTERS)]
 	
-	for _ in range(2):
+	for _ in range(1):
 		papers_clust, claims_clust = transform_to_clusters(papers_vec.values, claims_vec.values, prior)
 		papers_clust = align_clusters(cooc.values, papers_clust, claims_clust)
 

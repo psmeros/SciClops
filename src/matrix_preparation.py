@@ -94,7 +94,7 @@ def transform_to_vec(papers, claims, reduction_alg, reduction_dim=None, passage=
 
 def matrix_preparation(reduction_alg, reduction_dim=None, use_cache=True):
 	if use_cache:
-		cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim'])
+		cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
 		claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
 		papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col='url')
 
@@ -110,8 +110,6 @@ def matrix_preparation(reduction_alg, reduction_dim=None, use_cache=True):
 		papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
 		refs = set(papers['url'].unique())
 		claims['refs'] = claims.url.parallel_apply(lambda u: set(G.successors(u)).intersection(refs))
-		refs = set([e for l in claims['refs'].to_list() for e in l])
-		papers = papers[papers['url'].isin(refs)]
 
 		tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
 		claims['popularity'] = claims.url.parallel_apply(lambda u: sum([tweets.loc[t]['popularity'] for t in G.predecessors(u) if t in tweets.index]))
@@ -124,6 +122,8 @@ def matrix_preparation(reduction_alg, reduction_dim=None, use_cache=True):
 		print('cleaning...')
 		claims['clean_claim'] = claims['claim'].parallel_apply(clean_claim)
 		claims = claims[claims['clean_claim'].str.len() != 0]
+		refs = set([e for l in claims['refs'].to_list() for e in l])
+		papers = papers[papers['url'].isin(refs)]
 
 		claims = claims.set_index(['url', 'claim', 'popularity'])
 		papers = papers.set_index('url')
@@ -145,4 +145,4 @@ def matrix_preparation(reduction_alg, reduction_dim=None, use_cache=True):
 
 
 if __name__ == "__main__":
-	matrix_preparation('PCA', 2, use_cache=True)
+	matrix_preparation('PCA', 2, use_cache=False)
