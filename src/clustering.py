@@ -11,7 +11,7 @@ from torch import optim
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
-NUM_CLUSTERS = 20
+NUM_CLUSTERS = 10
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -30,10 +30,11 @@ def transform_to_clusters(papers_vec, claims_vec, prior):
 	return papers_vec, claims_vec
 
 # Hyper Parameters
-num_epochs = 1
+num_epochs = 10
 learning_rate = 1.e-3
 hidden = 50
 batch_size = 512
+gamma = 1.e-5
 
 class ClusterNet(nn.Module):
 	def __init__(self):
@@ -48,7 +49,7 @@ class ClusterNet(nn.Module):
 			nn.Softmax(dim=1),
 			# nn.Linear(NUM_CLUSTERS, hidden),
 			# nn.Linear(hidden, NUM_CLUSTERS),
-			# #nn.BatchNorm1d(NUM_CLUSTERS),
+			# # #nn.BatchNorm1d(NUM_CLUSTERS),
 			# nn.Softmax(dim=1),
 		)
 		
@@ -57,7 +58,7 @@ class ClusterNet(nn.Module):
 
 	def loss(self, P, L, C):
 		C_prime = L @ P
-		return torch.norm(C_prime - C, p='fro')
+		return torch.norm(C_prime - C, p='fro') - gamma * torch.norm(P, p='fro')
 ############################### ######### ###############################
 
 def align_clusters(cooc, papers_vec, claims_vec):
@@ -92,7 +93,7 @@ def align_clusters(cooc, papers_vec, claims_vec):
 		if epoch%1 == 0:
 			print(sum(mean_loss)/len(mean_loss))
 
-	print('Reconstruction Error',model.loss(model(papers_vec), cooc, claims_vec))
+	print('Reconstruction Error', torch.norm(cooc @ model(papers_vec) -  claims_vec, p='fro'))
 	papers_vec = model(papers_vec).detach().numpy()
 	return papers_vec
 
@@ -105,9 +106,15 @@ if __name__ == "__main__":
 
 	prior = [1/NUM_CLUSTERS for _ in range(NUM_CLUSTERS)]
 	
-	for _ in range(1):
+	for _ in range(2):
 		papers_clust, claims_clust = transform_to_clusters(papers_vec.values, claims_vec.values, prior)
 		papers_clust = align_clusters(cooc.values, papers_clust, claims_clust)
 
-		pd.DataFrame(papers_clust, index=papers_vec.index).to_csv(sciclops_dir + 'cache/papers_vec_clusters.tsv.bz2', sep='\t')
-		pd.DataFrame(claims_clust, index=claims_vec.index).to_csv(sciclops_dir + 'cache/claims_vec_clusters.tsv.bz2', sep='\t')
+		papers_clust = pd.DataFrame(papers_clust, index=papers_vec.index)
+		claims_clust = pd.DataFrame(claims_clust, index=claims_vec.index)
+		papers_clust.to_csv(sciclops_dir + 'cache/papers_vec_clusters.tsv.bz2', sep='\t')
+		claims_clust.to_csv(sciclops_dir + 'cache/claims_vec_clusters.tsv.bz2', sep='\t')
+
+		popularity = claims_clust.reset_index('popularity')['popularity']
+		prior = [sum(claims_clust[i]*popularity) for i in range(NUM_CLUSTERS)]
+		prior = [p/sum(prior) for p in prior]
