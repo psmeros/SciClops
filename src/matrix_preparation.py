@@ -45,10 +45,11 @@ def clean_claim(text):
 #Remove stopwords/Lemmatize
 def clean_paper(text):
 	text = [str(w.lemma_) for w in nlp(str(text)) if not (w.is_stop or len(w) == 1)]
+	text = [w for w in hn_vocabulary if w in text]
 	return text
 
 
-def transform_to_vec(papers, claims, reduction_alg, reduction_dim=None, passage='prelude'):
+def transform_to_vec(papers, claims, reduction_alg, reduction_dim=None, passage='full_text'):
 	if passage == 'title':
 		papers['passage'] = papers.title
 	elif passage == 'prelude':

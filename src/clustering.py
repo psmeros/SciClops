@@ -30,7 +30,7 @@ def transform_to_clusters(papers_vec, claims_vec, prior):
 	return papers_vec, claims_vec
 
 # Hyper Parameters
-num_epochs = 10
+num_epochs = 1
 learning_rate = 1.e-3
 hidden = 50
 batch_size = 512
@@ -40,16 +40,16 @@ class ClusterNet(nn.Module):
 		super(ClusterNet, self).__init__()
 		
 		self.papersNet = nn.Sequential(
-			# nn.Linear(NUM_CLUSTERS, hidden),
-			# nn.BatchNorm1d(hidden),
-			# nn.ReLU(),
-			# nn.Linear(hidden, NUM_CLUSTERS),
-			# nn.BatchNorm1d(NUM_CLUSTERS),
-			# nn.Softmax(dim=1),
 			nn.Linear(NUM_CLUSTERS, hidden),
+			nn.BatchNorm1d(hidden),
+			nn.ReLU(),
 			nn.Linear(hidden, NUM_CLUSTERS),
-			#nn.BatchNorm1d(NUM_CLUSTERS),
+			nn.BatchNorm1d(NUM_CLUSTERS),
 			nn.Softmax(dim=1),
+			# nn.Linear(NUM_CLUSTERS, hidden),
+			# nn.Linear(hidden, NUM_CLUSTERS),
+			# #nn.BatchNorm1d(NUM_CLUSTERS),
+			# nn.Softmax(dim=1),
 		)
 		
 	def forward(self, P):
