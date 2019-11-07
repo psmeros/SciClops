@@ -24,9 +24,8 @@ def load_matrices(representation, dimension=None):
 	papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col='url')
 	return cooc, papers_vec, claims_vec
 
-def transform_to_clusters(papers_vec, claims_vec, prior):
-	gmm = GaussianMixture(NUM_CLUSTERS,weights_init=prior).fit(claims_vec)#.fit(papers_vec)
-	#papers_vec = gmm.predict_proba(papers_vec)
+def transform_to_clusters(claims_vec, prior):
+	gmm = GaussianMixture(NUM_CLUSTERS,weights_init=prior).fit(claims_vec)
 	claims_vec = gmm.predict_proba(claims_vec)
 	
 
@@ -47,21 +46,23 @@ def transform_to_clusters(papers_vec, claims_vec, prior):
 
 
 
-	return papers_vec, claims_vec
+	return claims_vec
 
 # Hyper Parameters
-num_epochs = 10
+num_epochs = 100
 learning_rate = 1.e-3
 hidden = 50
 batch_size = 512
-gamma = 1.e-5
+gamma = 1.e-3
 
 class ClusterNet(nn.Module):
-	def __init__(self):
+	def __init__(self, shape):
 		super(ClusterNet, self).__init__()
 		
+		self.P_prime = nn.Parameter(nn.init.xavier_normal_(torch.Tensor(shape[0], shape[1])), requires_grad=True)
+		
 		self.papersNet = nn.Sequential(
-			nn.Linear(NUM_CLUSTERS, hidden),
+			nn.Linear(shape[1], hidden),
 			nn.BatchNorm1d(hidden),
 			nn.ReLU(),
 			nn.Linear(hidden, NUM_CLUSTERS),
@@ -91,7 +92,7 @@ def align_clusters(cooc, papers_vec, claims_vec):
 	claims_vec = torch.Tensor(claims_vec.astype(float))
 	
 	#Model training
-	model = ClusterNet()
+	model = ClusterNet(papers_vec.shape)
 	optimizer = optim.Adam(model.parameters(), lr=learning_rate) 
 
 	for epoch in range(num_epochs):
@@ -99,12 +100,13 @@ def align_clusters(cooc, papers_vec, claims_vec):
 
 		mean_loss = []
 		for i in range(0, len(p), batch_size):
-			P = papers_vec[p[i:i+batch_size]]
+			#P = papers_vec[p[i:i+batch_size]]
+			P = model.P_prime[p[i:i+batch_size]]
 			L = cooc[:, p[i:i+batch_size]]
 			C = claims_vec
 
 			optimizer.zero_grad()
-			P = model(P)
+			#P = model(P)
 			loss = model.loss(P, L, C)
 			mean_loss.append(loss.detach().numpy())
 			loss.backward()
@@ -113,22 +115,40 @@ def align_clusters(cooc, papers_vec, claims_vec):
 		if epoch%1 == 0:
 			print(sum(mean_loss)/len(mean_loss))
 
-	print('Reconstruction Error', torch.norm(cooc @ model(papers_vec) -  claims_vec, p='fro'))
-	papers_vec = model(papers_vec).detach().numpy()
+	papers_vec = model(papers_vec)
+	print('Reconstruction Error', torch.norm(cooc @ model.P_prime -  claims_vec, p='fro'))
+	papers_vec = papers_vec.detach().numpy()
 	return papers_vec
 
 
+def semantic_clustering(cooc, papers_vec, claims_vec):
+
+	cooc = cooc.values
+	papers_vec = papers_vec.values
+	claims_vec = claims_vec.values
+	
+	gmm = GaussianMixture(NUM_CLUSTERS).fit(papers_vec).fit(claims_vec)
+	claims_vec = gmm.predict_proba(claims_vec)
+	papers_vec = gmm.predict_proba(papers_vec)
+	
+	cooc = torch.Tensor(cooc.astype(float))
+	papers_vec = torch.Tensor(papers_vec.astype(float))
+	claims_vec = torch.Tensor(claims_vec.astype(float))
+
+	print('Reconstruction Error', torch.norm(cooc @ papers_vec -  claims_vec, p='fro'))
 
 
 if __name__ == "__main__":
 
 	cooc, papers_vec, claims_vec = load_matrices('embeddings', 10)
 
+	semantic_clustering(cooc, papers_vec, claims_vec)
+	exit()
 	prior = [1/NUM_CLUSTERS for _ in range(NUM_CLUSTERS)]
 	
-	for _ in range(2):
-		papers_clust, claims_clust = transform_to_clusters(papers_vec.values, claims_vec.values, prior)
-		papers_clust = align_clusters(cooc.values, papers_clust, claims_clust)
+	for _ in range(1):
+		claims_clust = transform_to_clusters(claims_vec.values, prior)
+		papers_clust = align_clusters(cooc.values, papers_vec.values, claims_clust)
 
 		papers_clust = pd.DataFrame(papers_clust, index=papers_vec.index)
 		claims_clust = pd.DataFrame(claims_clust, index=claims_vec.index)
