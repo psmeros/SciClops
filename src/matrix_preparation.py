@@ -1,15 +1,12 @@
 from pathlib import Path
 
 import networkx as nx
-import numpy as np
 import pandas as pd
 import spacy
 from pandarallel import pandarallel
 from sklearn.decomposition import TruncatedSVD
-from sklearn.manifold import TSNE
 from sklearn.preprocessing import MultiLabelBinarizer
 
-from gsdmm import MovieGroupProcess
 
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
@@ -18,7 +15,6 @@ sciclops_dir = str(Path.home()) + '/data/sciclops/'
 nlp = spacy.load('en_core_web_lg')
 hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
 
-NUM_CLUSTERS = 10
 CLAIM_THRESHOLD = 10
 ############################### ######### ###############################
 
@@ -48,8 +44,12 @@ def clean_paper(text):
 	text = [w for w in hn_vocabulary if w in text]
 	return text
 
+############################### ######### ###############################
 
-def transform_to_vec(papers, claims, reduction_alg, reduction_dim=None, passage='full_text'):
+def transform(papers, claims, representation, dimension, passage='full_text'):
+	papers_index = papers.index
+	claims_index = claims.index
+
 	if passage == 'title':
 		papers['passage'] = papers.title
 	elif passage == 'prelude':
@@ -57,43 +57,24 @@ def transform_to_vec(papers, claims, reduction_alg, reduction_dim=None, passage=
 	elif passage == 'full_text':
 		papers['passage'] = papers.title + ' ' + papers.full_text
 	
-	
 	print('transforming...')
-	if reduction_alg == 'GSDMM':
-		mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
-		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
-		claims_vec = np.zeros((len(claims), NUM_CLUSTERS))
-		claims_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
+	if representation =='textual':
+		papers = papers['passage']
+		claims = claims['clean_claim']
 
-		mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
-		papers['cluster'] = mgp.fit(papers['passage'], len(set([e for l in papers['passage'].tolist() for e in l])))
-		papers_vec = np.zeros((len(papers), NUM_CLUSTERS))
-		papers_vec[np.arange(len(papers)), papers.cluster.to_numpy()] = 1
+	elif representation =='embeddings':
+		papers = papers['passage'].parallel_apply(lambda x: nlp(' '.join(clean_paper(x))).vector).apply(pd.Series).values
+		claims = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
+		pca = TruncatedSVD(dimension).fit(claims).fit(papers)
+		papers = pca.transform(papers)
+		claims = pca.transform(claims)
 
-	elif reduction_alg == 'LDA':
-		#TODO
-		pass
+	papers = pd.DataFrame(papers, index=papers_index)
+	claims = pd.DataFrame(claims, index=claims_index)
 
-	elif reduction_alg =='PCA':
-		papers_vec = papers['passage'].parallel_apply(lambda x: nlp(' '.join(clean_paper(x))).vector).apply(pd.Series).values
-		claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
-		pca = TruncatedSVD(reduction_dim).fit(papers_vec).fit(claims_vec)
-		papers_vec = pca.transform(papers_vec)
-		claims_vec = pca.transform(claims_vec)
+	return papers, claims
 
-	elif reduction_alg =='T-SNE':
-		papers_vec = papers['passage'].parallel_apply(lambda x: nlp(' '.join(clean_paper(x))).vector).apply(pd.Series).values
-		claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
-		tsne = TSNE(reduction_dim).fit(papers_vec).fit(claims_vec)
-		papers_vec = tsne.transform(papers_vec)
-		claims_vec = tsne.transform(claims_vec)
-
-	papers_vec = pd.DataFrame(papers_vec, index=papers.index)
-	claims_vec = pd.DataFrame(claims_vec, index=claims.index)
-
-	return papers_vec, claims_vec
-
-def matrix_preparation(reduction_alg, reduction_dim=None):
+def matrix_preparation(representation, dimension=None):
 	pandarallel.initialize()
 	
 	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
@@ -126,18 +107,15 @@ def matrix_preparation(reduction_alg, reduction_dim=None):
 	mlb = MultiLabelBinarizer()
 	cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
 
-	papers_vec, claims_vec = transform_to_vec(papers, claims, reduction_alg, reduction_dim)
+	papers_vec, claims_vec = transform(papers, claims, representation, dimension)
 	
 	#caching    
 	cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
-	claims_vec.to_csv(sciclops_dir + 'cache/claims_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t')
-	papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t')
+	claims_vec.to_csv(sciclops_dir + 'cache/claims_vec_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t')
+	papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t')
 		
 	return cooc, papers_vec, claims_vec
 
 
-############################### ######### ###############################
-
-
 if __name__ == "__main__":
-	matrix_preparation('PCA', 2)
+	matrix_preparation('PCA', 10)

@@ -7,6 +7,8 @@ import torch.nn as nn
 from sklearn.mixture import GaussianMixture
 from torch import optim
 
+from gsdmm import MovieGroupProcess
+
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
@@ -16,17 +18,35 @@ NUM_CLUSTERS = 10
 
 ################################ HELPERS ################################
 
-def load_matrices(reduction_alg, reduction_dim):
+def load_matrices(representation, dimension=None):
 	cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
-	claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
-	papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+reduction_alg+'_'+str(reduction_dim)+'.tsv.bz2', sep='\t', index_col='url')
+	claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_vec_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
+	papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col='url')
 	return cooc, papers_vec, claims_vec
 
 def transform_to_clusters(papers_vec, claims_vec, prior):
-	gmm = GaussianMixture(NUM_CLUSTERS,weights_init=prior).fit(papers_vec).fit(claims_vec)
-	papers_vec = gmm.predict_proba(papers_vec)
+	gmm = GaussianMixture(NUM_CLUSTERS,weights_init=prior).fit(claims_vec)#.fit(papers_vec)
+	#papers_vec = gmm.predict_proba(papers_vec)
 	claims_vec = gmm.predict_proba(claims_vec)
 	
+
+	# if representation == 'GSDMM':
+	# 	mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
+	# 	claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
+	# 	claims_vec = np.zeros((len(claims), NUM_CLUSTERS))
+	# 	claims_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
+
+	# 	mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
+	# 	papers['cluster'] = mgp.fit(papers['passage'], len(set([e for l in papers['passage'].tolist() for e in l])))
+	# 	papers_vec = np.zeros((len(papers), NUM_CLUSTERS))
+	# 	papers_vec[np.arange(len(papers)), papers.cluster.to_numpy()] = 1
+
+	# elif representation == 'LDA':
+	# 	#TODO
+	# 	pass
+
+
+
 	return papers_vec, claims_vec
 
 # Hyper Parameters
@@ -102,7 +122,7 @@ def align_clusters(cooc, papers_vec, claims_vec):
 
 if __name__ == "__main__":
 
-	cooc, papers_vec, claims_vec = load_matrices('PCA', 2)
+	cooc, papers_vec, claims_vec = load_matrices('embeddings', 10)
 
 	prior = [1/NUM_CLUSTERS for _ in range(NUM_CLUSTERS)]
 	
