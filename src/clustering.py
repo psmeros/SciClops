@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.mixture import GaussianMixture
 from torch import optim
 
@@ -28,24 +30,6 @@ def transform_to_clusters(claims_vec, prior):
 	gmm = GaussianMixture(NUM_CLUSTERS,weights_init=prior).fit(claims_vec)
 	claims_vec = gmm.predict_proba(claims_vec)
 	
-
-	# if representation == 'GSDMM':
-	# 	mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
-	# 	claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
-	# 	claims_vec = np.zeros((len(claims), NUM_CLUSTERS))
-	# 	claims_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
-
-	# 	mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
-	# 	papers['cluster'] = mgp.fit(papers['passage'], len(set([e for l in papers['passage'].tolist() for e in l])))
-	# 	papers_vec = np.zeros((len(papers), NUM_CLUSTERS))
-	# 	papers_vec[np.arange(len(papers)), papers.cluster.to_numpy()] = 1
-
-	# elif representation == 'LDA':
-	# 	#TODO
-	# 	pass
-
-
-
 	return claims_vec
 
 # Hyper Parameters
@@ -121,29 +105,67 @@ def align_clusters(cooc, papers_vec, claims_vec):
 	return papers_vec
 
 
-def semantic_clustering(cooc, papers_vec, claims_vec):
+def joint_clustering(method, dimension=None):
 
-	cooc = cooc.values
-	papers_vec = papers_vec.values
-	claims_vec = claims_vec.values
+	if method == 'GMM':
+		cooc, papers, claims = load_matrices(representation='embeddings', dimension=dimension)
+
+		cooc = cooc.values
+		papers = papers.values
+		claims = claims.values
+		
+		gmm = GaussianMixture(NUM_CLUSTERS).fit(papers).fit(claims)
+		claims = gmm.predict_proba(claims)
+		papers = gmm.predict_proba(papers)
+		
+	elif method == 'LDA':
+		cooc, papers, claims = load_matrices(representation='textual')
+		cooc = cooc.values		
+		papers = papers['clean_passage']
+		claims = claims['clean_claim']
+		
+		CV = CountVectorizer().fit(papers).fit(claims)
 	
-	gmm = GaussianMixture(NUM_CLUSTERS).fit(papers_vec).fit(claims_vec)
-	claims_vec = gmm.predict_proba(claims_vec)
-	papers_vec = gmm.predict_proba(papers_vec)
-	
+		papers = CV.transform(papers)
+		claims = CV.transform(claims)
+
+		LDA = LatentDirichletAllocation(n_components=NUM_CLUSTERS, n_jobs=-1).fit(papers).fit(claims)
+
+		papers = LDA.transform(papers)
+		claims = LDA.transform(claims)
+
+	elif method == 'GSDMM':
+		cooc, papers, claims = load_matrices(representation='textual')
+
+		papers = papers[['clean_passage']
+		claims = claims['clean_claim']
+
+		mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
+		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
+		papers['cluster'] = mgp.fit(papers['clean_passage'], len(set([e for l in papers['clean_passage'].tolist() for e in l])))
+
+		claims_vec = np.zeros((len(claims), NUM_CLUSTERS))
+		claims_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
+		papers_vec = np.zeros((len(papers), NUM_CLUSTERS))
+		papers_vec[np.arange(len(papers)), papers.cluster.to_numpy()] = 1
+
+		claims = claims_vec
+		papers = papers_vec
+		cooc = cooc.values
+
+
 	cooc = torch.Tensor(cooc.astype(float))
-	papers_vec = torch.Tensor(papers_vec.astype(float))
-	claims_vec = torch.Tensor(claims_vec.astype(float))
+	papers = torch.Tensor(papers.astype(float))
+	claims = torch.Tensor(claims.astype(float))
 
-	print('Reconstruction Error', torch.norm(cooc @ papers_vec -  claims_vec, p='fro'))
+	print('Reconstruction Error', torch.norm(cooc @ papers - claims, p='fro'))
+	print('Non-Uniformity Reguralizer', torch.norm(papers, p='fro') + torch.norm(claims, p='fro'))
 
 
-if __name__ == "__main__":
+def two_step_clustering():
+	
+	cooc, papers_vec, claims_vec = load_matrices(representation='embeddings', dimension=10)
 
-	cooc, papers_vec, claims_vec = load_matrices('embeddings', 10)
-
-	semantic_clustering(cooc, papers_vec, claims_vec)
-	exit()
 	prior = [1/NUM_CLUSTERS for _ in range(NUM_CLUSTERS)]
 	
 	for _ in range(1):
@@ -158,3 +180,9 @@ if __name__ == "__main__":
 		popularity = claims_clust.reset_index('popularity')['popularity']
 		prior = [sum(claims_clust[i]*popularity) for i in range(NUM_CLUSTERS)]
 		prior = [p/sum(prior) for p in prior]
+
+
+if __name__ == "__main__":
+	#joint_clustering(method='GMM', dimension=10)
+	#joint_clustering(method='GMM', dimension=100)
+	joint_clustering(method='LDA')
