@@ -64,7 +64,7 @@ def transform(papers, claims, representation):
 
 	return papers, claims
 
-def matrix_preparation(representation, pca_dimensions=None):
+def matrix_preparation(representations, pca_dimensions=None):
 	pandarallel.initialize()
 	
 	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
@@ -101,21 +101,20 @@ def matrix_preparation(representation, pca_dimensions=None):
 	mlb = MultiLabelBinarizer()
 	cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
 
-	papers, claims = transform(papers, claims, representation)
-	
-	if pca_dimensions != None:
-		for d in pca_dimensions:
-			pca = TruncatedSVD(d).fit(claims).fit(papers)
-			pca.transform(papers).to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+str(d)+'.tsv.bz2', sep='\t')
-			pca.transform(claims).to_csv(sciclops_dir + 'cache/claims_vec_'+representation+'_'+str(d)+'.tsv.bz2', sep='\t')	
+	for representation in representations:
+		papers, claims = transform(papers, claims, representation)
+		
+		if representation == 'embeddings' and pca_dimensions != None:
+			for d in pca_dimensions:
+				pca = TruncatedSVD(d).fit(claims).fit(papers)
+				pca.transform(papers).to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+str(d)+'.tsv.bz2', sep='\t')
+				pca.transform(claims).to_csv(sciclops_dir + 'cache/claims_vec_'+representation+'_'+str(d)+'.tsv.bz2', sep='\t')	
 
-	#caching    
-	cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
-	pca.transform(papers).to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'.tsv.bz2', sep='\t')
-	pca.transform(claims).to_csv(sciclops_dir + 'cache/claims_vec_'+representation+'.tsv.bz2', sep='\t')	
-
+		#caching    
+		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
+		pca.transform(papers).to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'.tsv.bz2', sep='\t')
+		pca.transform(claims).to_csv(sciclops_dir + 'cache/claims_vec_'+representation+'.tsv.bz2', sep='\t')	
 
 
 if __name__ == "__main__":
-	matrix_preparation(representation='textual')
-	matrix_preparation(representation='embeddings', pca_dimensions=[10,100])
+	matrix_preparation(representations=['textual','embeddings'], pca_dimensions=[10,100])
