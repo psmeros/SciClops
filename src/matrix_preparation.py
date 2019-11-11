@@ -46,7 +46,7 @@ def clean_paper(text):
 
 ############################### ######### ###############################
 
-def transform(papers, claims, representation, dimension):
+def transform(papers, claims, representation):
 	papers_index = papers.index
 	claims_index = claims.index
 	
@@ -59,17 +59,12 @@ def transform(papers, claims, representation, dimension):
 		papers = papers['clean_passage'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
 		claims = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
 
-		if dimension != None:
-			pca = TruncatedSVD(dimension).fit(claims).fit(papers)
-			papers = pca.transform(papers)
-			claims = pca.transform(claims)
-
 	papers = pd.DataFrame(papers, index=papers_index)
 	claims = pd.DataFrame(claims, index=claims_index)
 
 	return papers, claims
 
-def matrix_preparation(representation, dimension=None):
+def matrix_preparation(representation, pca_dimensions=None):
 	pandarallel.initialize()
 	
 	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
@@ -106,18 +101,21 @@ def matrix_preparation(representation, dimension=None):
 	mlb = MultiLabelBinarizer()
 	cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
 
-	papers_vec, claims_vec = transform(papers, claims, representation, dimension)
+	papers, claims = transform(papers, claims, representation)
 	
+	if pca_dimensions != None:
+		for d in pca_dimensions:
+			pca = TruncatedSVD(d).fit(claims).fit(papers)
+			pca.transform(papers).to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+str(d)+'.tsv.bz2', sep='\t')
+			pca.transform(claims).to_csv(sciclops_dir + 'cache/claims_vec_'+representation+'_'+str(d)+'.tsv.bz2', sep='\t')	
+
 	#caching    
 	cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
-	claims_vec.to_csv(sciclops_dir + 'cache/claims_vec_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t')
-	papers_vec.to_csv(sciclops_dir + 'cache/papers_vec_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t')
-		
-	return cooc, papers_vec, claims_vec
+	pca.transform(papers).to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'.tsv.bz2', sep='\t')
+	pca.transform(claims).to_csv(sciclops_dir + 'cache/claims_vec_'+representation+'.tsv.bz2', sep='\t')	
+
 
 
 if __name__ == "__main__":
 	matrix_preparation(representation='textual')
-	matrix_preparation(representation='embeddings', dimension=10)
-	matrix_preparation(representation='embeddings', dimension=100)
-	matrix_preparation(representation='embeddings')
+	matrix_preparation(representation='embeddings', pca_dimensions=[10,100])
