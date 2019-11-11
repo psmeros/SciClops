@@ -46,24 +46,17 @@ def clean_paper(text):
 
 ############################### ######### ###############################
 
-def transform(papers, claims, representation, dimension, passage='full_text'):
+def transform(papers, claims, representation, dimension):
 	papers_index = papers.index
 	claims_index = claims.index
-
-	if passage == 'title':
-		papers['passage'] = papers.title
-	elif passage == 'prelude':
-		papers['passage'] = papers.title + ' ' + papers.full_text.apply(lambda w: w.split('\n')[0])
-	elif passage == 'full_text':
-		papers['passage'] = papers.title + ' ' + papers.full_text
 	
 	print('transforming...')
 	if representation =='textual':
-		papers = papers['passage'].parallel_apply(lambda x: ' '.join(clean_paper(x)))
+		papers = papers['clean_passage'].parallel_apply(lambda x: ' '.join(x))
 		claims = claims['clean_claim'].parallel_apply(lambda x: ' '.join(x))
 
 	elif representation =='embeddings':
-		papers = papers['passage'].parallel_apply(lambda x: nlp(' '.join(clean_paper(x))).vector).apply(pd.Series).values
+		papers = papers['clean_passage'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
 		claims = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
 
 		if dimension != None:
@@ -86,6 +79,12 @@ def matrix_preparation(representation, dimension=None):
 	G.remove_nodes_from(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
 	
 	papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
+
+	print('cleaning...')	
+
+	papers['clean_passage'] = (papers.title + ' ' + papers.full_text).parallel_apply(lambda x: clean_paper(x))
+	papers = papers[papers['clean_passage'].str.len() != 0]
+
 	refs = set(papers['url'].unique())
 	claims['refs'] = claims.url.parallel_apply(lambda u: set(G.successors(u)).intersection(refs))
 
@@ -96,8 +95,6 @@ def matrix_preparation(representation, dimension=None):
 	claims = claims.explode('quotes').rename(columns={'quotes': 'claim'})
 	claims = claims[~claims['claim'].isna()]
 
-	#cleaning
-	print('cleaning...')
 	claims['clean_claim'] = claims['claim'].parallel_apply(clean_claim)
 	claims = claims[claims['clean_claim'].str.len() != 0]
 	refs = set([e for l in claims['refs'].to_list() for e in l])
