@@ -46,24 +46,6 @@ def clean_paper(text):
 
 ############################### ######### ###############################
 
-def transform(papers, claims, representation):
-	papers_index = papers.index
-	claims_index = claims.index
-	
-	print('transforming...')
-	if representation =='textual':
-		papers = papers['clean_passage'].parallel_apply(lambda x: ' '.join(x))
-		claims = claims['clean_claim'].parallel_apply(lambda x: ' '.join(x))
-
-	elif representation =='embeddings':
-		papers = papers['clean_passage'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
-		claims = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
-
-	papers = pd.DataFrame(papers, index=papers_index)
-	claims = pd.DataFrame(claims, index=claims_index)
-
-	return papers, claims
-
 def matrix_preparation(representations, pca_dimensions=None):
 	pandarallel.initialize()
 	
@@ -75,12 +57,12 @@ def matrix_preparation(representations, pca_dimensions=None):
 	
 	papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
 
-	print('cleaning...')	
-
+	print('cleaning papers...')	
 	papers['clean_passage'] = (papers.title + ' ' + papers.full_text).parallel_apply(lambda x: clean_paper(x))
 	papers = papers[papers['clean_passage'].str.len() != 0]
-
 	refs = set(papers['url'].unique())
+
+	print('cleaning claims...')	
 	claims['refs'] = claims.url.parallel_apply(lambda u: set(G.successors(u)).intersection(refs))
 
 	tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
@@ -102,18 +84,29 @@ def matrix_preparation(representations, pca_dimensions=None):
 	cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
 
 	for representation in representations:
-		papers, claims = transform(papers, claims, representation)
-		
+		papers_index = papers.index
+		claims_index = claims.index
+			
+		print('transforming...')
+		if representation =='textual':
+			papers = papers['clean_passage'].parallel_apply(lambda x: ' '.join(x))
+			claims = claims['clean_claim'].parallel_apply(lambda x: ' '.join(x))
+
+		elif representation =='embeddings':
+			papers = papers['clean_passage'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
+			claims = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
+
+
+		print('caching...')
 		if representation == 'embeddings' and pca_dimensions != None:
 			for d in pca_dimensions:
 				pca = TruncatedSVD(d).fit(claims).fit(papers)
-				pca.transform(papers).to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+str(d)+'.tsv.bz2', sep='\t')
-				pca.transform(claims).to_csv(sciclops_dir + 'cache/claims_vec_'+representation+'_'+str(d)+'.tsv.bz2', sep='\t')	
+				pd.DataFrame(pca.transform(papers), index=papers_index).to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+str(d)+'.tsv.bz2', sep='\t')
+				pd.DataFrame(pca.transform(claims), index=claims_index).to_csv(sciclops_dir + 'cache/claims_vec_'+representation+'_'+str(d)+'.tsv.bz2', sep='\t')	
 
-		#caching    
 		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
-		pca.transform(papers).to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'.tsv.bz2', sep='\t')
-		pca.transform(claims).to_csv(sciclops_dir + 'cache/claims_vec_'+representation+'.tsv.bz2', sep='\t')	
+		pd.DataFrame(papers, index=papers_index).to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'.tsv.bz2', sep='\t')
+		pd.DataFrame(claims, index=claims_index).to_csv(sciclops_dir + 'cache/claims_vec_'+representation+'.tsv.bz2', sep='\t')	
 
 
 if __name__ == "__main__":
