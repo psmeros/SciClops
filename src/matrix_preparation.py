@@ -59,15 +59,17 @@ def transform(papers, claims, representation, dimension, passage='full_text'):
 	
 	print('transforming...')
 	if representation =='textual':
-		papers = papers['passage']
-		claims = claims['clean_claim']
+		papers = papers['passage'].parallel_apply(lambda x: ' '.join(clean_paper(x)))
+		claims = claims['clean_claim'].parallel_apply(lambda x: ' '.join(x))
 
 	elif representation =='embeddings':
 		papers = papers['passage'].parallel_apply(lambda x: nlp(' '.join(clean_paper(x))).vector).apply(pd.Series).values
 		claims = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
-		pca = TruncatedSVD(dimension).fit(claims).fit(papers)
-		papers = pca.transform(papers)
-		claims = pca.transform(claims)
+
+		if dimension != None:
+			pca = TruncatedSVD(dimension).fit(claims).fit(papers)
+			papers = pca.transform(papers)
+			claims = pca.transform(claims)
 
 	papers = pd.DataFrame(papers, index=papers_index)
 	claims = pd.DataFrame(claims, index=claims_index)
@@ -118,4 +120,7 @@ def matrix_preparation(representation, dimension=None):
 
 
 if __name__ == "__main__":
-	matrix_preparation('PCA', 10)
+	matrix_preparation(representation='textual')
+	matrix_preparation(representation='embeddings', dimension=10)
+	matrix_preparation(representation='embeddings', dimension=100)
+	matrix_preparation(representation='embeddings')
