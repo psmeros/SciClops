@@ -22,14 +22,13 @@ NUM_CLUSTERS = 10
 
 def load_matrices(representation, dimension=None):
 	cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
-	claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_vec_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
-	papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_vec_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col='url')
+	claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
+	papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col='url')
 	return cooc, papers_vec, claims_vec
 
 def transform_to_clusters(claims_vec, prior):
 	gmm = GaussianMixture(NUM_CLUSTERS,weights_init=prior).fit(claims_vec)
 	claims_vec = gmm.predict_proba(claims_vec)
-	
 	return claims_vec
 
 # Hyper Parameters
@@ -137,10 +136,7 @@ def joint_clustering(method, dimension=None):
 	elif method == 'GSDMM':
 		cooc, papers, claims = load_matrices(representation='textual')
 
-		papers = papers[['clean_passage']
-		claims = claims['clean_claim']
-
-		mgp = MovieGroupProcess(K=NUM_CLUSTERS, alpha=0.01, beta=0.01, n_iters=50)
+		mgp = MovieGroupProcess(K=NUM_CLUSTERS)
 		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
 		papers['cluster'] = mgp.fit(papers['clean_passage'], len(set([e for l in papers['clean_passage'].tolist() for e in l])))
 
@@ -183,6 +179,7 @@ def two_step_clustering():
 
 
 if __name__ == "__main__":
-	#joint_clustering(method='GMM', dimension=10)
+	#joint_clustering(method='LDA')
+	#joint_clustering(method='GSDMM')
+	joint_clustering(method='GMM', dimension=10)
 	#joint_clustering(method='GMM', dimension=100)
-	joint_clustering(method='LDA')

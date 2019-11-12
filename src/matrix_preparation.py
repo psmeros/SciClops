@@ -78,36 +78,34 @@ def matrix_preparation(representations, pca_dimensions=None):
 	refs = set([e for l in claims['refs'].to_list() for e in l])
 	papers = papers[papers['url'].isin(refs)]
 
-	claims = claims.set_index(['url', 'claim', 'popularity'])
 	papers = papers.set_index('url')
+	claims = claims.set_index(['url', 'claim', 'popularity'])
+	papers_index = papers.index
+	claims_index = claims.index
 
 	mlb = MultiLabelBinarizer()
 	cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
+	cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
 
 	for representation in representations:
-		papers_index = papers.index
-		claims_index = claims.index
-			
 		print('transforming...')
 		if representation =='textual':
-			papers = papers['clean_passage'].parallel_apply(lambda x: ' '.join(x))
-			claims = claims['clean_claim'].parallel_apply(lambda x: ' '.join(x))
+			papers_vec = papers['clean_passage'].parallel_apply(lambda x: ' '.join(x))
+			claims_vec = claims['clean_claim'].parallel_apply(lambda x: ' '.join(x))
 
 		elif representation =='embeddings':
-			papers = papers['clean_passage'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
-			claims = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
-
+			papers_vec = papers['clean_passage'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
+			claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
 
 		print('caching...')
 		if representation == 'embeddings' and pca_dimensions != None:
-			for d in pca_dimensions:
-				pca = TruncatedSVD(d).fit(claims).fit(papers)
-				pd.DataFrame(pca.transform(papers), index=papers_index).to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'_'+str(d)+'.tsv.bz2', sep='\t')
-				pd.DataFrame(pca.transform(claims), index=claims_index).to_csv(sciclops_dir + 'cache/claims_vec_'+representation+'_'+str(d)+'.tsv.bz2', sep='\t')	
+			for dimension in pca_dimensions:
+				pca = TruncatedSVD(dimension).fit(claims_vec).fit(papers_vec)
+				pd.DataFrame(pca.transform(papers_vec), index=papers_index).to_csv(sciclops_dir + 'cache/papers_'+representation+'_'+str(dimension)+'.tsv.bz2', sep='\t')
+				pd.DataFrame(pca.transform(claims_vec), index=claims_index).to_csv(sciclops_dir + 'cache/claims_'+representation+'_'+str(dimension)+'.tsv.bz2', sep='\t')	
 
-		cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
-		pd.DataFrame(papers, index=papers_index).to_csv(sciclops_dir + 'cache/papers_vec_'+representation+'.tsv.bz2', sep='\t')
-		pd.DataFrame(claims, index=claims_index).to_csv(sciclops_dir + 'cache/claims_vec_'+representation+'.tsv.bz2', sep='\t')	
+		pd.DataFrame(papers_vec, index=papers_index).to_csv(sciclops_dir + 'cache/papers_'+representation+'.tsv.bz2', sep='\t')
+		pd.DataFrame(claims_vec, index=claims_index).to_csv(sciclops_dir + 'cache/claims_'+representation+'.tsv.bz2', sep='\t')	
 
 
 if __name__ == "__main__":
