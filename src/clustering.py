@@ -7,6 +7,7 @@ import torch.nn as nn
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.mixture import GaussianMixture
+from sklearn.cluster import KMeans
 from torch import optim
 
 from gsdmm import MovieGroupProcess
@@ -113,10 +114,27 @@ def joint_clustering(method, dimension=None):
 		papers = papers.values
 		claims = claims.values
 		
-		gmm = GaussianMixture(NUM_CLUSTERS).fit(papers).fit(claims)
+		gmm = GaussianMixture(NUM_CLUSTERS, max_iter=500, covariance_type='spherical').fit(papers).fit(claims)
 		claims = gmm.predict_proba(claims)
 		papers = gmm.predict_proba(papers)
 		
+	elif method == 'KMeans':
+		cooc, papers, claims = load_matrices(representation='embeddings', dimension=dimension)
+
+		cooc = cooc.values
+		papers = papers.values
+		claims = claims.values
+		
+		kmeans = KMeans(NUM_CLUSTERS).fit(papers).fit(claims)
+
+		p_cluster = kmeans.predict(papers)
+		c_cluster = kmeans.predict(claims)
+		
+		claims = np.zeros((len(claims), NUM_CLUSTERS))
+		claims[np.arange(len(claims)), c_cluster] = 1
+		papers = np.zeros((len(papers), NUM_CLUSTERS))
+		papers[np.arange(len(papers)), p_cluster] = 1
+
 	elif method == 'LDA':
 		cooc, papers, claims = load_matrices(representation='textual')
 		cooc = cooc.values		
@@ -135,19 +153,16 @@ def joint_clustering(method, dimension=None):
 
 	elif method == 'GSDMM':
 		cooc, papers, claims = load_matrices(representation='textual')
+		cooc = cooc.values
 
 		mgp = MovieGroupProcess(K=NUM_CLUSTERS)
-		claims['cluster'] = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
-		papers['cluster'] = mgp.fit(papers['clean_passage'], len(set([e for l in papers['clean_passage'].tolist() for e in l])))
-
-		claims_vec = np.zeros((len(claims), NUM_CLUSTERS))
-		claims_vec[np.arange(len(claims)), claims.cluster.to_numpy()] = 1
-		papers_vec = np.zeros((len(papers), NUM_CLUSTERS))
-		papers_vec[np.arange(len(papers)), papers.cluster.to_numpy()] = 1
-
-		claims = claims_vec
-		papers = papers_vec
-		cooc = cooc.values
+		p_cluster = mgp.fit(papers['clean_passage'], len(set([e for l in papers['clean_passage'].tolist() for e in l])))
+		c_cluster = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
+		
+		papers = np.zeros((len(papers), NUM_CLUSTERS))
+		papers[np.arange(len(papers)), np.array(p_cluster)] = 1
+		claims = np.zeros((len(claims), NUM_CLUSTERS))
+		claims[np.arange(len(claims)), np.array(c_cluster)] = 1
 
 
 	cooc = torch.Tensor(cooc.astype(float))
@@ -181,5 +196,8 @@ def two_step_clustering():
 if __name__ == "__main__":
 	#joint_clustering(method='LDA')
 	#joint_clustering(method='GSDMM')
-	joint_clustering(method='GMM', dimension=10)
+	#joint_clustering(method='GMM', dimension=2)
 	#joint_clustering(method='GMM', dimension=100)
+	#joint_clustering(method='KMeans', dimension=10)
+	#joint_clustering(method='KMeans')
+	exit()
