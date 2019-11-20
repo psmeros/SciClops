@@ -65,6 +65,7 @@ def matrix_preparation(representations, pca_dimensions=None):
 
 	print('cleaning claims...')	
 	claims['refs'] = claims.url.parallel_apply(lambda u: set(G.successors(u)).intersection(refs))
+	claims = claims[claims['refs'].str.len() != 0]
 
 	tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
 	claims['popularity'] = claims.url.parallel_apply(lambda u: sum([tweets.loc[t]['popularity'] for t in G.predecessors(u) if t in tweets.index]))
@@ -109,4 +110,4 @@ def matrix_preparation(representations, pca_dimensions=None):
 
 
 if __name__ == "__main__":
-	matrix_preparation(representations=['textual','embeddings'], pca_dimensions=[10,100])
+	matrix_preparation(representations=['textual','embeddings'], pca_dimensions=[2])
