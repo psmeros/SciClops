@@ -8,6 +8,7 @@ from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.mixture import GaussianMixture
 from sklearn.cluster import KMeans
+from sklearn.metrics.cluster import v_measure_score
 from torch import optim
 
 from gsdmm import MovieGroupProcess
@@ -104,6 +105,21 @@ def align_clusters(cooc, papers_vec, claims_vec):
 	papers_vec = papers_vec.detach().numpy()
 	return papers_vec
 
+def eval_clusters(cooc, papers, claims, subset_percentage):
+	papers_len = len(papers)
+	r = np.random.permutation(papers_len)
+
+	papers = papers[r[:int(papers_len*subset_percentage)]]
+	cooc = cooc[:, r[:int(papers_len*subset_percentage)]]
+
+	mask = (~np.all(cooc == 0, axis=1))
+	cooc = cooc[mask]
+	claims = claims[mask]
+	
+	labels_true = np.multiply(cooc, np.argmax(papers, axis=1)).max(axis=1)
+	labels_pred = np.argmax(claims, axis=1)
+
+	print(v_measure_score(labels_true, labels_pred))
 
 def joint_clustering(method, dimension=None):
 
@@ -165,12 +181,12 @@ def joint_clustering(method, dimension=None):
 		claims[np.arange(len(claims)), np.array(c_cluster)] = 1
 
 
-	cooc = torch.Tensor(cooc.astype(float))
-	papers = torch.Tensor(papers.astype(float))
-	claims = torch.Tensor(claims.astype(float))
-
-	print('Reconstruction Error', torch.norm(cooc @ papers - claims, p='fro'))
-	print('Non-Uniformity Reguralizer', torch.norm(papers, p='fro') + torch.norm(claims, p='fro'))
+	eval_clusters(cooc, papers, claims, 0.5)
+	# cooc = torch.Tensor(cooc.astype(float))
+	# papers = torch.Tensor(papers.astype(float))
+	# claims = torch.Tensor(claims.astype(float))
+	#print('Reconstruction Error', torch.norm(cooc @ papers - claims, p='fro'))
+	#print('Non-Uniformity Reguralizer', torch.norm(papers, p='fro') + torch.norm(claims, p='fro'))
 
 
 def two_step_clustering():
