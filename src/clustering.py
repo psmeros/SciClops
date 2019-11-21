@@ -105,21 +105,33 @@ def align_clusters(cooc, papers_vec, claims_vec):
 	papers_vec = papers_vec.detach().numpy()
 	return papers_vec
 
-def eval_clusters(cooc, papers, claims, subset_percentage):
-	papers_len = len(papers)
-	r = np.random.permutation(papers_len)
-
-	papers = papers[r[:int(papers_len*subset_percentage)]]
-	cooc = cooc[:, r[:int(papers_len*subset_percentage)]]
-
-	mask = (~np.all(cooc == 0, axis=1))
-	cooc = cooc[mask]
-	claims = claims[mask]
+def eval_clusters(cooc, papers, claims, top_k):
+	top_papers = np.unique((-papers).argsort(axis=0)[:top_k].flatten())
 	
-	labels_true = np.multiply(cooc, np.argmax(papers, axis=1)).max(axis=1)
-	labels_pred = np.argmax(claims, axis=1)
+	P = papers[top_papers]
+	L = cooc[:, top_papers]
+	mask = (~np.all(L == 0, axis=1))
+	L = L[mask]
+	C = claims[mask]
+	
+	labels_true = np.multiply(L, np.argmax(P, axis=1)).max(axis=1)
+	labels_pred = np.argmax(C, axis=1)
 
 	print(v_measure_score(labels_true, labels_pred))
+
+	top_claims = np.unique((-claims).argsort(axis=0)[:top_k].flatten()) 
+	
+	C = claims[top_claims]
+	L = cooc[top_claims]
+	mask = (~np.all(L == 0, axis=0))
+	L = L[:, mask]
+	P = papers[mask]
+	
+	labels_true = np.multiply(L.T, np.argmax(C, axis=1)).max(axis=1)
+	labels_pred = np.argmax(P, axis=1)
+
+	print(v_measure_score(labels_true, labels_pred))
+
 
 def joint_clustering(method, dimension=None):
 
@@ -130,7 +142,7 @@ def joint_clustering(method, dimension=None):
 		papers = papers.values
 		claims = claims.values
 		
-		gmm = GaussianMixture(NUM_CLUSTERS, max_iter=500, covariance_type='spherical').fit(papers).fit(claims)
+		gmm = GaussianMixture(NUM_CLUSTERS, n_init=3, covariance_type='spherical', tol=0.1).fit(papers).fit(claims)
 		claims = gmm.predict_proba(claims)
 		papers = gmm.predict_proba(papers)
 		
@@ -181,12 +193,7 @@ def joint_clustering(method, dimension=None):
 		claims[np.arange(len(claims)), np.array(c_cluster)] = 1
 
 
-	eval_clusters(cooc, papers, claims, 0.5)
-	# cooc = torch.Tensor(cooc.astype(float))
-	# papers = torch.Tensor(papers.astype(float))
-	# claims = torch.Tensor(claims.astype(float))
-	#print('Reconstruction Error', torch.norm(cooc @ papers - claims, p='fro'))
-	#print('Non-Uniformity Reguralizer', torch.norm(papers, p='fro') + torch.norm(claims, p='fro'))
+	eval_clusters(cooc, papers, claims, 10)
 
 
 def two_step_clustering():
