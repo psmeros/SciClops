@@ -114,10 +114,10 @@ def eval_clusters(cooc, papers, claims, top_k):
 	L = L[mask]
 	C = claims[mask]
 	
-	labels_true = np.multiply(L, np.argmax(P, axis=1)).max(axis=1)
-	labels_pred = np.argmax(C, axis=1)
+	labels_inherited = np.multiply(L, np.argmax(P, axis=1)).max(axis=1)
+	labels_expected = np.argmax(C, axis=1)
 
-	print(v_measure_score(labels_true, labels_pred))
+	v1 = v_measure_score(labels_expected, labels_inherited)
 
 	top_claims = np.unique((-claims).argsort(axis=0)[:top_k].flatten()) 
 	
@@ -127,13 +127,17 @@ def eval_clusters(cooc, papers, claims, top_k):
 	L = L[:, mask]
 	P = papers[mask]
 	
-	labels_true = np.multiply(L.T, np.argmax(C, axis=1)).max(axis=1)
-	labels_pred = np.argmax(P, axis=1)
+	labels_inherited = np.multiply(L.T, np.argmax(C, axis=1)).max(axis=1)
+	labels_expected = np.argmax(P, axis=1)
 
-	print(v_measure_score(labels_true, labels_pred))
+	v2 = v_measure_score(labels_expected, labels_inherited)
+
+	print('claims:', v1)
+	print('papers:', v2)
+	print('average:', (v1+v2)/2)
 
 
-def joint_clustering(method, dimension=None):
+def disjoint_clustering(method, top_k=5, dimension=None):
 
 	if method == 'GMM':
 		cooc, papers, claims = load_matrices(representation='embeddings', dimension=dimension)
@@ -142,9 +146,8 @@ def joint_clustering(method, dimension=None):
 		papers = papers.values
 		claims = claims.values
 		
-		gmm = GaussianMixture(NUM_CLUSTERS, n_init=3, covariance_type='spherical', tol=0.1).fit(papers).fit(claims)
-		claims = gmm.predict_proba(claims)
-		papers = gmm.predict_proba(papers)
+		claims = GaussianMixture(NUM_CLUSTERS).fit(claims).predict_proba(claims)
+		papers = GaussianMixture(NUM_CLUSTERS).fit(papers).predict_proba(papers)
 		
 	elif method == 'KMeans':
 		cooc, papers, claims = load_matrices(representation='embeddings', dimension=dimension)
@@ -153,10 +156,8 @@ def joint_clustering(method, dimension=None):
 		papers = papers.values
 		claims = claims.values
 		
-		kmeans = KMeans(NUM_CLUSTERS).fit(papers).fit(claims)
-
-		p_cluster = kmeans.predict(papers)
-		c_cluster = kmeans.predict(claims)
+		p_cluster = KMeans(NUM_CLUSTERS).fit(papers).predict(papers)
+		c_cluster = KMeans(NUM_CLUSTERS).fit(claims).predict(claims)
 		
 		claims = np.zeros((len(claims), NUM_CLUSTERS))
 		claims[np.arange(len(claims)), c_cluster] = 1
@@ -170,22 +171,18 @@ def joint_clustering(method, dimension=None):
 		claims = claims['clean_claim']
 		
 		CV = CountVectorizer().fit(papers).fit(claims)
-	
 		papers = CV.transform(papers)
 		claims = CV.transform(claims)
 
-		LDA = LatentDirichletAllocation(n_components=NUM_CLUSTERS, n_jobs=-1).fit(papers).fit(claims)
-
-		papers = LDA.transform(papers)
-		claims = LDA.transform(claims)
+		papers = LatentDirichletAllocation(n_components=NUM_CLUSTERS, n_jobs=-1).fit(papers).transform(papers)
+		claims = LatentDirichletAllocation(n_components=NUM_CLUSTERS, n_jobs=-1).fit(claims).transform(claims)
 
 	elif method == 'GSDMM':
 		cooc, papers, claims = load_matrices(representation='textual')
 		cooc = cooc.values
 
-		mgp = MovieGroupProcess(K=NUM_CLUSTERS)
-		p_cluster = mgp.fit(papers['clean_passage'], len(set([e for l in papers['clean_passage'].tolist() for e in l])))
-		c_cluster = mgp.fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
+		p_cluster = MovieGroupProcess(K=NUM_CLUSTERS).fit(papers['clean_passage'], len(set([e for l in papers['clean_passage'].tolist() for e in l])))
+		c_cluster = MovieGroupProcess(K=NUM_CLUSTERS).fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
 		
 		papers = np.zeros((len(papers), NUM_CLUSTERS))
 		papers[np.arange(len(papers)), np.array(p_cluster)] = 1
@@ -193,7 +190,7 @@ def joint_clustering(method, dimension=None):
 		claims[np.arange(len(claims)), np.array(c_cluster)] = 1
 
 
-	eval_clusters(cooc, papers, claims, 10)
+	eval_clusters(cooc, papers, claims, top_k)
 
 
 def two_step_clustering():
@@ -217,10 +214,10 @@ def two_step_clustering():
 
 
 if __name__ == "__main__":
-	#joint_clustering(method='LDA')
-	#joint_clustering(method='GSDMM')
-	#joint_clustering(method='GMM', dimension=2)
-	#joint_clustering(method='GMM', dimension=100)
-	#joint_clustering(method='KMeans', dimension=10)
-	#joint_clustering(method='KMeans')
+	#disjoint_clustering(method='LDA')
+	disjoint_clustering(method='GSDMM')
+	#disjoint_clustering(method='GMM')
+	#disjoint_clustering(method='GMM', dimension=2)
+	#disjoint_clustering(method='KMeans', dimension=2)
+	#disjoint_clustering(method='KMeans')
 	exit()
