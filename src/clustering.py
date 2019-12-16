@@ -34,7 +34,7 @@ def transform_to_clusters(claims_vec, prior):
 	return claims_vec
 
 # Hyper Parameters
-num_epochs = 100
+num_epochs = 300
 learning_rate = 1.e-3
 hidden = 50
 batch_size = 512
@@ -64,7 +64,7 @@ class ClusterNet(nn.Module):
 
 	def loss(self, P, L, C):
 		C_prime = L @ P
-		return torch.norm(C_prime - C, p='fro') - gamma * torch.norm(P, p='fro')
+		return torch.norm(C_prime - C, p='fro') - gamma * (torch.norm(P, p='fro') + torch.norm(C, p='fro'))
 ############################### ######### ###############################
 
 def align_clusters(cooc, papers_vec, claims_vec):
@@ -77,7 +77,7 @@ def align_clusters(cooc, papers_vec, claims_vec):
 	claims_vec = torch.Tensor(claims_vec.astype(float))
 	
 	#Model training
-	model = ClusterNet(papers_vec.shape)
+	model = ClusterNet((papers_vec.shape[0],claims_vec.shape[1]))
 	optimizer = optim.Adam(model.parameters(), lr=learning_rate) 
 
 	for epoch in range(num_epochs):
@@ -100,9 +100,7 @@ def align_clusters(cooc, papers_vec, claims_vec):
 		if epoch%1 == 0:
 			print(sum(mean_loss)/len(mean_loss))
 
-	papers_vec = model(papers_vec)
-	print('Reconstruction Error', torch.norm(cooc @ model.P_prime -  claims_vec, p='fro'))
-	papers_vec = papers_vec.detach().numpy()
+	papers_vec = model.P_prime.detach().numpy()
 	return papers_vec
 
 def eval_clusters(cooc, papers, claims, top_k):
@@ -193,9 +191,9 @@ def disjoint_clustering(method, top_k=5, dimension=None):
 	eval_clusters(cooc, papers, claims, top_k)
 
 
-def two_step_clustering():
+def two_step_clustering(top_k=5):
 	
-	cooc, papers_vec, claims_vec = load_matrices(representation='embeddings', dimension=10)
+	cooc, papers_vec, claims_vec = load_matrices(representation='embeddings', dimension=2)
 
 	prior = [1/NUM_CLUSTERS for _ in range(NUM_CLUSTERS)]
 	
@@ -203,6 +201,7 @@ def two_step_clustering():
 		claims_clust = transform_to_clusters(claims_vec.values, prior)
 		papers_clust = align_clusters(cooc.values, papers_vec.values, claims_clust)
 
+		eval_clusters(cooc.values, papers_clust, claims_clust, top_k)
 		papers_clust = pd.DataFrame(papers_clust, index=papers_vec.index)
 		claims_clust = pd.DataFrame(claims_clust, index=claims_vec.index)
 		papers_clust.to_csv(sciclops_dir + 'cache/papers_vec_clusters.tsv.bz2', sep='\t')
@@ -215,9 +214,10 @@ def two_step_clustering():
 
 if __name__ == "__main__":
 	#disjoint_clustering(method='LDA')
-	disjoint_clustering(method='GSDMM')
+	#disjoint_clustering(method='GSDMM')
 	#disjoint_clustering(method='GMM')
 	#disjoint_clustering(method='GMM', dimension=2)
 	#disjoint_clustering(method='KMeans', dimension=2)
 	#disjoint_clustering(method='KMeans')
+	two_step_clustering()
 	exit()
