@@ -24,14 +24,10 @@ NUM_CLUSTERS = 10
 
 def load_matrices(representation, dimension=None):
 	cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
-	claims_vec = pd.read_csv(sciclops_dir + 'cache/claims_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
-	papers_vec = pd.read_csv(sciclops_dir + 'cache/papers_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col='url')
-	return cooc, papers_vec, claims_vec
+	claims = pd.read_csv(sciclops_dir + 'cache/claims_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
+	papers = pd.read_csv(sciclops_dir + 'cache/papers_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col='url')
+	return cooc, papers, claims
 
-def transform_to_clusters(claims_vec, prior):
-	gmm = GaussianMixture(NUM_CLUSTERS,weights_init=prior).fit(claims_vec)
-	claims_vec = gmm.predict_proba(claims_vec)
-	return claims_vec
 
 # Hyper Parameters
 num_epochs = 300
@@ -67,28 +63,37 @@ class ClusterNet(nn.Module):
 		return torch.norm(C_prime - C, p='fro') - gamma * (torch.norm(P, p='fro') + torch.norm(C, p='fro'))
 ############################### ######### ###############################
 
-def align_clusters(cooc, papers_vec, claims_vec):
+def align_clustering(prior, top_k=5):
 
-	cooc, index = np.unique(cooc, axis=0, return_index=True)
-	claims_vec = claims_vec[index]
+	cooc, papers, claims = load_matrices(representation='embeddings')
+	claims_index = claims.index
+	papers_index = papers.index
+	claims = claims.values
+	papers = papers.values
+	cooc = cooc.values
 
-	cooc = torch.Tensor(cooc.astype(float))
-	papers_vec = torch.Tensor(papers_vec.astype(float))
-	claims_vec = torch.Tensor(claims_vec.astype(float))
+	claims = GaussianMixture(NUM_CLUSTERS, weights_init=prior, covariance_type='spherical', tol=0.5, random_state=42).fit(claims).predict_proba(claims)
+
+	cooc_unique, index = np.unique(cooc, axis=0, return_index=True)
+	claims_unique = claims[index]
+
+	cooc_unique = torch.Tensor(cooc_unique.astype(float))
+	papers = torch.Tensor(papers.astype(float))
+	claims_unique = torch.Tensor(claims_unique.astype(float))
 	
 	#Model training
-	model = ClusterNet((papers_vec.shape[0],claims_vec.shape[1]))
+	model = ClusterNet((papers.shape[0],claims_unique.shape[1]))
 	optimizer = optim.Adam(model.parameters(), lr=learning_rate) 
 
 	for epoch in range(num_epochs):
-		p = np.random.permutation(len(papers_vec))
+		p = np.random.permutation(len(papers))
 
 		mean_loss = []
 		for i in range(0, len(p), batch_size):
-			#P = papers_vec[p[i:i+batch_size]]
+			#P = papers[p[i:i+batch_size]]
 			P = model.P_prime[p[i:i+batch_size]]
-			L = cooc[:, p[i:i+batch_size]]
-			C = claims_vec
+			L = cooc_unique[:, p[i:i+batch_size]]
+			C = claims_unique
 
 			optimizer.zero_grad()
 			#P = model(P)
@@ -100,8 +105,15 @@ def align_clusters(cooc, papers_vec, claims_vec):
 		if epoch%1 == 0:
 			print(sum(mean_loss)/len(mean_loss))
 
-	papers_vec = model.P_prime.detach().numpy()
-	return papers_vec
+	papers = model.P_prime.detach().numpy()
+	#papers = model(papers).detach().numpy()
+
+	eval_clusters(cooc, papers, claims, top_k)
+
+	papers = pd.DataFrame(papers, index=papers_index)
+	claims = pd.DataFrame(claims, index=claims_index)
+
+	return papers, claims
 
 def eval_clusters(cooc, papers, claims, top_k):
 	top_papers = np.unique((-papers).argsort(axis=0)[:top_k].flatten())
@@ -144,8 +156,8 @@ def disjoint_clustering(method, top_k=5, dimension=None):
 		papers = papers.values
 		claims = claims.values
 		
-		claims = GaussianMixture(NUM_CLUSTERS).fit(claims).predict_proba(claims)
-		papers = GaussianMixture(NUM_CLUSTERS).fit(papers).predict_proba(papers)
+		claims = GaussianMixture(NUM_CLUSTERS, covariance_type='spherical', tol=0.5, random_state=42).fit(claims).predict_proba(claims)
+		papers = GaussianMixture(NUM_CLUSTERS, covariance_type='spherical', tol=0.5, random_state=42).fit(papers).predict_proba(papers)
 		
 	elif method == 'KMeans':
 		cooc, papers, claims = load_matrices(representation='embeddings', dimension=dimension)
@@ -154,8 +166,8 @@ def disjoint_clustering(method, top_k=5, dimension=None):
 		papers = papers.values
 		claims = claims.values
 		
-		p_cluster = KMeans(NUM_CLUSTERS).fit(papers).predict(papers)
-		c_cluster = KMeans(NUM_CLUSTERS).fit(claims).predict(claims)
+		p_cluster = KMeans(NUM_CLUSTERS, random_state=42).fit(papers).predict(papers)
+		c_cluster = KMeans(NUM_CLUSTERS, random_state=42).fit(claims).predict(claims)
 		
 		claims = np.zeros((len(claims), NUM_CLUSTERS))
 		claims[np.arange(len(claims)), c_cluster] = 1
@@ -191,33 +203,27 @@ def disjoint_clustering(method, top_k=5, dimension=None):
 	eval_clusters(cooc, papers, claims, top_k)
 
 
-def two_step_clustering(top_k=5):
+def popularity_clustering(iterations=1, top_k=5):
 	
-	cooc, papers_vec, claims_vec = load_matrices(representation='embeddings', dimension=2)
-
 	prior = [1/NUM_CLUSTERS for _ in range(NUM_CLUSTERS)]
 	
-	for _ in range(1):
-		claims_clust = transform_to_clusters(claims_vec.values, prior)
-		papers_clust = align_clusters(cooc.values, papers_vec.values, claims_clust)
-
-		eval_clusters(cooc.values, papers_clust, claims_clust, top_k)
-		papers_clust = pd.DataFrame(papers_clust, index=papers_vec.index)
-		claims_clust = pd.DataFrame(claims_clust, index=claims_vec.index)
-		papers_clust.to_csv(sciclops_dir + 'cache/papers_vec_clusters.tsv.bz2', sep='\t')
-		claims_clust.to_csv(sciclops_dir + 'cache/claims_vec_clusters.tsv.bz2', sep='\t')
-
-		popularity = claims_clust.reset_index('popularity')['popularity']
-		prior = [sum(claims_clust[i]*popularity) for i in range(NUM_CLUSTERS)]
+	for _ in range(iterations):
+		papers, claims = align_clustering(prior, top_k)
+		popularity = claims.reset_index('popularity')['popularity']
+		prior = [sum(claims[i]*popularity) for i in range(NUM_CLUSTERS)]
 		prior = [p/sum(prior) for p in prior]
+
+	papers.to_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t')
+	claims.to_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
+
 
 
 if __name__ == "__main__":
 	#disjoint_clustering(method='LDA')
 	#disjoint_clustering(method='GSDMM')
 	#disjoint_clustering(method='GMM')
-	#disjoint_clustering(method='GMM', dimension=2)
-	#disjoint_clustering(method='KMeans', dimension=2)
+	#disjoint_clustering(method='GMM', dimension=10)
+	#disjoint_clustering(method='KMeans', dimension=10)
 	#disjoint_clustering(method='KMeans')
-	two_step_clustering()
+	popularity_clustering()
 	exit()
