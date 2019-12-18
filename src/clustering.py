@@ -17,6 +17,7 @@ from gsdmm import MovieGroupProcess
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
+np.random.seed(42)
 NUM_CLUSTERS = 10
 ############################### ######### ###############################
 
@@ -40,7 +41,7 @@ class ClusterNet(nn.Module):
 	def __init__(self, shape):
 		super(ClusterNet, self).__init__()
 		
-		self.P_prime = nn.Parameter(nn.init.xavier_normal_(torch.Tensor(shape[0], shape[1])), requires_grad=True)
+		self.P_prime = nn.Parameter(nn.init.xavier_normal_(torch.Tensor(shape[0], NUM_CLUSTERS)), requires_grad=True)
 		
 		self.papersNet = nn.Sequential(
 			nn.Linear(shape[1], hidden),
@@ -62,58 +63,6 @@ class ClusterNet(nn.Module):
 		C_prime = L @ P
 		return torch.norm(C_prime - C, p='fro') - gamma * (torch.norm(P, p='fro') + torch.norm(C, p='fro'))
 ############################### ######### ###############################
-
-def align_clustering(prior, top_k=5):
-
-	cooc, papers, claims = load_matrices(representation='embeddings')
-	claims_index = claims.index
-	papers_index = papers.index
-	claims = claims.values
-	papers = papers.values
-	cooc = cooc.values
-
-	claims = GaussianMixture(NUM_CLUSTERS, weights_init=prior, covariance_type='spherical', tol=0.5, random_state=42).fit(claims).predict_proba(claims)
-
-	cooc_unique, index = np.unique(cooc, axis=0, return_index=True)
-	claims_unique = claims[index]
-
-	cooc_unique = torch.Tensor(cooc_unique.astype(float))
-	papers = torch.Tensor(papers.astype(float))
-	claims_unique = torch.Tensor(claims_unique.astype(float))
-	
-	#Model training
-	model = ClusterNet((papers.shape[0],claims_unique.shape[1]))
-	optimizer = optim.Adam(model.parameters(), lr=learning_rate) 
-
-	for epoch in range(num_epochs):
-		p = np.random.permutation(len(papers))
-
-		mean_loss = []
-		for i in range(0, len(p), batch_size):
-			#P = papers[p[i:i+batch_size]]
-			P = model.P_prime[p[i:i+batch_size]]
-			L = cooc_unique[:, p[i:i+batch_size]]
-			C = claims_unique
-
-			optimizer.zero_grad()
-			#P = model(P)
-			loss = model.loss(P, L, C)
-			mean_loss.append(loss.detach().numpy())
-			loss.backward()
-			optimizer.step()
-
-		if epoch%1 == 0:
-			print(sum(mean_loss)/len(mean_loss))
-
-	papers = model.P_prime.detach().numpy()
-	#papers = model(papers).detach().numpy()
-
-	eval_clusters(cooc, papers, claims, top_k)
-
-	papers = pd.DataFrame(papers, index=papers_index)
-	claims = pd.DataFrame(claims, index=claims_index)
-
-	return papers, claims
 
 def eval_clusters(cooc, papers, claims, top_k):
 	top_papers = np.unique((-papers).argsort(axis=0)[:top_k].flatten())
@@ -145,7 +94,6 @@ def eval_clusters(cooc, papers, claims, top_k):
 	print('claims:', v1)
 	print('papers:', v2)
 	print('average:', (v1+v2)/2)
-
 
 def disjoint_clustering(method, top_k=5, dimension=None):
 
@@ -202,13 +150,72 @@ def disjoint_clustering(method, top_k=5, dimension=None):
 
 	eval_clusters(cooc, papers, claims, top_k)
 
+def align_clustering(prior, learn_transform, top_k):
 
-def popularity_clustering(iterations=1, top_k=5):
+	cooc, papers, claims = load_matrices(representation='embeddings')
+	claims_index = claims.index
+	papers_index = papers.index
+	claims = claims.values
+	papers = papers.values
+	cooc = cooc.values
+
+	claims = GaussianMixture(NUM_CLUSTERS, weights_init=prior, covariance_type='spherical', tol=0.5, random_state=42).fit(claims).predict_proba(claims)
+
+	cooc_unique, index = np.unique(cooc, axis=0, return_index=True)
+	claims_unique = claims[index]
+
+	cooc_unique = torch.Tensor(cooc_unique.astype(float))
+	papers = torch.Tensor(papers.astype(float))
+	claims_unique = torch.Tensor(claims_unique.astype(float))
+	
+	#Model training
+	model = ClusterNet(papers.shape)
+	optimizer = optim.Adam(model.parameters(), lr=learning_rate) 
+
+	for epoch in range(num_epochs):
+		rand = np.random.permutation(len(papers))
+
+		mean_loss = []
+		for i in range(0, len(rand), batch_size):
+			optimizer.zero_grad()
+			
+			L = cooc_unique[:, rand[i:i+batch_size]]
+			C = claims_unique
+
+			if learn_transform:
+				P = papers[rand[i:i+batch_size]]
+				P = model(P)
+			else:
+				P = model.P_prime[rand[i:i+batch_size]]
+			
+			loss = model.loss(P, L, C)
+			mean_loss.append(loss.detach().numpy())
+			loss.backward()
+			optimizer.step()
+
+		if epoch%1 == 0:
+			print(sum(mean_loss)/len(mean_loss))
+
+	if learn_transform:
+		papers = model(papers).detach().numpy()
+	else:
+		papers = model.P_prime.detach().numpy()
+	
+	eval_clusters(cooc, papers, claims, top_k)
+
+	papers = pd.DataFrame(papers, index=papers_index)
+	claims = pd.DataFrame(claims, index=claims_index)
+
+	return papers, claims
+
+
+def popularity_clustering(learn_transform, iterations=1, top_k=5):
 	
 	prior = [1/NUM_CLUSTERS for _ in range(NUM_CLUSTERS)]
 	
 	for _ in range(iterations):
-		papers, claims = align_clustering(prior, top_k)
+		papers, claims = align_clustering(prior, learn_transform, top_k)
+		
 		popularity = claims.reset_index('popularity')['popularity']
 		prior = [sum(claims[i]*popularity) for i in range(NUM_CLUSTERS)]
 		prior = [p/sum(prior) for p in prior]
@@ -225,5 +232,5 @@ if __name__ == "__main__":
 	#disjoint_clustering(method='GMM', dimension=10)
 	#disjoint_clustering(method='KMeans', dimension=10)
 	#disjoint_clustering(method='KMeans')
-	popularity_clustering()
+	popularity_clustering(learn_transform=False, iterations=2)
 	exit()
