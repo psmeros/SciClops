@@ -25,17 +25,17 @@ def read_graph(graph_file):
 
 
 def train_BERT():
-	df = pd.read_csv(sciclops_dir+'small_files/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1)
-	train_df, eval_df = train_test_split(df, test_size=0.3, random_state=42)
+	df = pd.concat([pd.read_csv(sciclops_dir+'small_files/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1), pd.read_csv(sciclops_dir + 'small_files/arguments/scientific.tsv', sep='\t')])
+	#train_df, eval_df = train_test_split(df, test_size=0.3, random_state=42)
 
 	# Create a ClassificationModel
 	model = ClassificationModel('bert', 'bert-base-uncased', use_cuda=False) # You can set class weights by using the optional weight argument
 
 	# Train the model
-	model.train_model(train_df)
+	model.train_model(df)
 
 	# Evaluate the model
-	result, model_outputs, wrong_predictions = model.eval_model(eval_df)
+	#result, model_outputs, wrong_predictions = model.eval_model(eval_df)
 
 def validation_set():	
 	nlp = spacy.load('en_core_web_lg')
@@ -71,4 +71,5 @@ def validation_set():
 
 	pd.concat([positive_samples, negative_samples]).to_csv(sciclops_dir+'small_files/arguments/scientific.tsv', sep='\t', index=False)
 
-validation_set()
+
+train_BERT()
