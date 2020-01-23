@@ -1,13 +1,12 @@
 from pathlib import Path
 
-from simpletransformers.classification import ClassificationModel
+import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
-import matplotlib.pyplot as plt
-
-from sklearn.model_selection import train_test_split
-
 import spacy
+from simpletransformers.classification import ClassificationModel
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import precision_recall_fscore_support
 
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
@@ -21,23 +20,8 @@ CLAIM_THRESHOLD = 10
 #Read diffusion graph
 def read_graph(graph_file):
 	return nx.from_pandas_edgelist(pd.read_csv(graph_file, sep='\t', header=None), 0, 1, create_using=nx.DiGraph())
-############################### ######### ###############################
 
-
-def train_BERT():
-	df = pd.concat([pd.read_csv(sciclops_dir+'small_files/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1), pd.read_csv(sciclops_dir + 'small_files/arguments/scientific.tsv', sep='\t')])
-	#train_df, eval_df = train_test_split(df, test_size=0.3, random_state=42)
-
-	# Create a ClassificationModel
-	model = ClassificationModel('bert', 'bert-base-uncased', use_cuda=False) # You can set class weights by using the optional weight argument
-
-	# Train the model
-	model.train_model(df)
-
-	# Evaluate the model
-	#result, model_outputs, wrong_predictions = model.eval_model(eval_df)
-
-def validation_set():	
+def soft_labeling():	
 	nlp = spacy.load('en_core_web_lg')
 
 	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
@@ -70,6 +54,57 @@ def validation_set():
 	negative_samples
 
 	pd.concat([positive_samples, negative_samples]).to_csv(sciclops_dir+'small_files/arguments/scientific.tsv', sep='\t', index=False)
+############################### ######### ###############################
+
+def train_BERT(model='bert-base-uncased'):
+	df = pd.concat([pd.read_csv(sciclops_dir+'small_files/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1), pd.read_csv(sciclops_dir + 'small_files/arguments/scientific.tsv', sep='\t')])
+	model = ClassificationModel('bert', model, use_cuda=False)
+	model.train_model(df)
+
+def eval_BERT(model):
+	df = pd.read_csv(sciclops_dir + 'small_files/arguments/validation_set.tsv', sep='\t')
+	df = pd.concat([df, pd.read_csv(sciclops_dir + 'small_files/arguments/scientific.tsv', sep='\t').sample(300)])
+	model = ClassificationModel('bert', model, use_cuda=False)
+	result, _, _ = model.eval_model(df)
+	print (result)
+
+def rule_based():
+	nlp = spacy.load('en_core_web_lg')
+	
+	def pattern_search(sentence):
+		keywords = open(sciclops_dir + 'small_files/keywords/action.txt').read().splitlines()
+		sentence = nlp(sentence)
+		
+		verbs = set()
+		for v in sentence:
+			if v.head.pos_ == 'VERB':
+				verbs.add(v.head)
+
+		if not verbs:
+			return False
+
+		rootVerb = ([w for w in sentence if w.head is w] or [None])[0]
+		verbs = [rootVerb] + list(verbs)
+
+		entities = [e.text for e in sentence.ents if e.label_ in ['PERSON', 'ORG']]
+
+		for v in verbs:
+			if v is not None and v.lemma_ in keywords:
+				for np in v.children:
+					if np.dep_ == 'nsubj':
+						claimer = sentence[np.left_edge.i : np.right_edge.i+1].text
+						if claimer in entities:
+							return True
+
+		return False
+
+	df = pd.read_csv(sciclops_dir + 'small_files/arguments/validation_set.tsv', sep='\t')
+	df['pred'] = df.sentence.apply(lambda s: pattern_search(s))
+	print(precision_recall_fscore_support(df['label'], df['pred'], average='binary'))
+
+if __name__ == "__main__":
+	#rule_based()
+	eval_BERT(sciclops_dir + 'models/fine-tuned-bert')#-classifier')
 
 
-train_BERT()
+
