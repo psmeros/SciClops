@@ -6,7 +6,7 @@ import pandas as pd
 import spacy
 from simpletransformers.classification import ClassificationModel
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import precision_recall_fscore_support
+from sklearn.metrics import confusion_matrix
 
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
@@ -100,11 +100,13 @@ def rule_based():
 
 	df = pd.read_csv(sciclops_dir + 'small_files/arguments/validation_set.tsv', sep='\t')
 	df['pred'] = df.sentence.apply(lambda s: pattern_search(s))
-	print(precision_recall_fscore_support(df['label'], df['pred'], average='binary'))
+	tn, fp, fn, tp = confusion_matrix(df['label'], df['pred']).ravel()
+	print(tn, fp, fn, tp)
 
 if __name__ == "__main__":
-	#rule_based()
-	eval_BERT(sciclops_dir + 'models/fine-tuned-bert')#-classifier')
+	rule_based()
+	#eval_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier')
+
 
 
 
