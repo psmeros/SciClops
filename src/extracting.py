@@ -3,10 +3,12 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
+import numpy as np
 import spacy
 from simpletransformers.classification import ClassificationModel
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix
+import re
 
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
@@ -54,6 +56,34 @@ def soft_labeling():
 	negative_samples
 
 	pd.concat([positive_samples, negative_samples]).to_csv(sciclops_dir+'small_files/arguments/scientific.tsv', sep='\t', index=False)
+
+def prepare_eval_dataset(gold_agreement):
+	df = pd.read_csv(sciclops_dir + 'small_files/arguments/mturk_results.csv')
+
+	df = df[['Input.sentence', 'Input.golden_label', 'Input.type', 'Answer.claim.label', 'LifetimeApprovalRate']]
+
+	df = df.rename(columns={'Input.sentence':'sentence', 'Input.golden_label':'golden_label', 'Input.type':'type', 'Answer.claim.label':'label', 'LifetimeApprovalRate':'approval'})
+
+	df = df.dropna()
+	df = df[df.approval.apply(lambda x: int(re.sub('\%.*', '', x))) != 0]
+
+	#aggregate results from crowdworkers
+	df = pd.DataFrame(df.groupby(['sentence', 'type', 'golden_label'])['label'].apply(lambda x: (lambda c: (c.index[0], 'strong') if c.get(0) - c.get(1, default=0) > 1 else (c.index[0], 'weak') if c.get(0) - c.get(1, default=0) == 1 else np.nan)(x.value_counts())).apply(pd.Series))
+
+	df = df.rename(columns={0:'label', 1: 'agreement'})
+	df.label = df.label.map({'Yes':1, 'No':0})
+
+	df = df.dropna().reset_index()
+
+
+	
+	if gold_agreement == 'strong':
+		df =  df[(df.agreement == 'strong') & (df['golden_label']==df['label'])]
+	elif gold_agreement == 'weak':
+		df =  df[(df.agreement == 'weak')]
+
+	return df[['sentence', 'label']]
+
 ############################### ######### ###############################
 
 def train_BERT(model='bert-base-uncased'):
@@ -61,14 +91,13 @@ def train_BERT(model='bert-base-uncased'):
 	model = ClassificationModel('bert', model, use_cuda=False)
 	model.train_model(df)
 
-def eval_BERT(model):
-	df = pd.read_csv(sciclops_dir + 'small_files/arguments/validation_set.tsv', sep='\t')
-	df = pd.concat([df, pd.read_csv(sciclops_dir + 'small_files/arguments/scientific.tsv', sep='\t').sample(300)])
+def eval_BERT(model, gold_agreement):
+	df = prepare_eval_dataset(gold_agreement)
 	model = ClassificationModel('bert', model, use_cuda=False)
 	result, _, _ = model.eval_model(df)
 	print (result)
 
-def rule_based():
+def rule_based(gold_agreement):
 	nlp = spacy.load('en_core_web_lg')
 	
 	def pattern_search(sentence):
@@ -98,15 +127,13 @@ def rule_based():
 
 		return False
 
-	df = pd.read_csv(sciclops_dir + 'small_files/arguments/validation_set.tsv', sep='\t')
+	df = prepare_eval_dataset(gold_agreement)
 	df['pred'] = df.sentence.apply(lambda s: pattern_search(s))
 	tn, fp, fn, tp = confusion_matrix(df['label'], df['pred']).ravel()
 	print(tn, fp, fn, tp)
 
 if __name__ == "__main__":
-	rule_based()
-	#eval_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier')
-
-
+	rule_based(gold_agreement='strong')
+	#eval_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier', gold_agreement='weak')
 
 
