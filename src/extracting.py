@@ -7,7 +7,7 @@ import numpy as np
 import spacy
 from simpletransformers.classification import ClassificationModel
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import precision_recall_fscore_support
 import re
 
 ############################### CONSTANTS ###############################
@@ -74,8 +74,6 @@ def prepare_eval_dataset(gold_agreement):
 	df.label = df.label.map({'Yes':1, 'No':0})
 
 	df = df.dropna().reset_index()
-
-
 	
 	if gold_agreement == 'strong':
 		df =  df[(df.agreement == 'strong') & (df['golden_label']==df['label'])]
@@ -95,45 +93,42 @@ def eval_BERT(model, gold_agreement):
 	df = prepare_eval_dataset(gold_agreement)
 	model = ClassificationModel('bert', model, use_cuda=False)
 	result, _, _ = model.eval_model(df)
-	print (result)
+	p = result['tp']/(result['tp']+result['fp'])
+	r = result['tp']/(result['tp']+result['fn'])
+	f1 = 2*p*r/(p+r)
+	print (p,r,f1)
 
 def rule_based(gold_agreement):
 	nlp = spacy.load('en_core_web_lg')
 	
 	def pattern_search(sentence):
-		keywords = open(sciclops_dir + 'small_files/keywords/action.txt').read().splitlines()
+		action = open(sciclops_dir + 'small_files/keywords/action.txt').read().splitlines()
+		person = open(sciclops_dir + 'small_files/keywords/person.txt').read().splitlines()
+		study = open(sciclops_dir + 'small_files/keywords/study.txt').read().splitlines()
+		vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
 		sentence = nlp(sentence)
 		
-		verbs = set()
-		for v in sentence:
-			if v.head.pos_ == 'VERB':
-				verbs.add(v.head)
-
-		if not verbs:
-			return False
-
-		rootVerb = ([w for w in sentence if w.head is w] or [None])[0]
-		verbs = [rootVerb] + list(verbs)
-
-		entities = [e.text for e in sentence.ents if e.label_ in ['PERSON', 'ORG']]
-
+		verbs = ([w for w in sentence if w.dep_=='ROOT'] or [None])
 		for v in verbs:
-			if v is not None and v.lemma_ in keywords:
-				for np in v.children:
-					if np.dep_ == 'nsubj':
-						claimer = sentence[np.left_edge.i : np.right_edge.i+1].text
-						if claimer in entities:
-							return True
-
+			if v.text in action:
+				return True
+			for np in v.children:
+				if np.dep_ in ['nsubj', 'dobj']:
+					claimer = sentence[np.left_edge.i : np.right_edge.i+1].text
+					for w in vocabulary+person+study:
+						if w in claimer:
+							return True 
+	
 		return False
 
 	df = prepare_eval_dataset(gold_agreement)
 	df['pred'] = df.sentence.apply(lambda s: pattern_search(s))
-	tn, fp, fn, tp = confusion_matrix(df['label'], df['pred']).ravel()
-	print(tn, fp, fn, tp)
+
+	df[df['pred'] != df['label']]
+	print(precision_recall_fscore_support(df['label'], df['pred'], average='binary'))
 
 if __name__ == "__main__":
-	rule_based(gold_agreement='strong')
-	#eval_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier', gold_agreement='weak')
+	#rule_based(gold_agreement='strong')
+	eval_BERT(sciclops_dir + 'models/vanilla-bert-classifier', gold_agreement='strong')
 
 
