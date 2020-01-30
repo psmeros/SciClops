@@ -102,20 +102,22 @@ def rule_based(gold_agreement):
 	nlp = spacy.load('en_core_web_lg')
 	
 	def pattern_search(sentence):
+		sentence = nlp(sentence)
+		
 		action = open(sciclops_dir + 'small_files/keywords/action.txt').read().splitlines()
 		person = open(sciclops_dir + 'small_files/keywords/person.txt').read().splitlines()
 		study = open(sciclops_dir + 'small_files/keywords/study.txt').read().splitlines()
 		vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
-		sentence = nlp(sentence)
-		
+		entities = [e.text for e in sentence.ents if e.label_ in ['PERSON', 'ORG']]
 		verbs = ([w for w in sentence if w.dep_=='ROOT'] or [None])
+
 		for v in verbs:
 			if v.text in action:
 				return True
 			for np in v.children:
 				if np.dep_ in ['nsubj', 'dobj']:
 					claimer = sentence[np.left_edge.i : np.right_edge.i+1].text
-					for w in vocabulary+person+study:
+					for w in vocabulary+person+study+entities:
 						if w in claimer:
 							return True 
 	
@@ -128,7 +130,6 @@ def rule_based(gold_agreement):
 	print(precision_recall_fscore_support(df['label'], df['pred'], average='binary'))
 
 if __name__ == "__main__":
-	#rule_based(gold_agreement='strong')
-	eval_BERT(sciclops_dir + 'models/vanilla-bert-classifier', gold_agreement='strong')
-
+	#rule_based(gold_agreement='weak')
+	eval_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier', gold_agreement='weak')
 
