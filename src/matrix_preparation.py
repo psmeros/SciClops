@@ -49,8 +49,7 @@ def clean_paper(text):
 def matrix_preparation(representations, pca_dimensions=None):
 	pandarallel.initialize()
 	
-	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
-	claims = articles[['url', 'quotes']].drop_duplicates(subset='url')
+	claims = pd.read_csv(sciclops_dir+'cache/claims_raw.tsv.bz2', sep='\t')
 
 	G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
 	G.remove_nodes_from(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
@@ -70,9 +69,7 @@ def matrix_preparation(representations, pca_dimensions=None):
 	tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
 	claims['popularity'] = claims.url.parallel_apply(lambda u: sum([tweets.loc[t]['popularity'] for t in G.predecessors(u) if t in tweets.index]))
 
-	claims.quotes = claims.quotes.parallel_apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
-	claims = claims.explode('quotes').rename(columns={'quotes': 'claim'})
-	claims = claims[~claims['claim'].isna()]
+	claims = claims.explode('claim')
 
 	claims['clean_claim'] = claims['claim'].parallel_apply(clean_claim)
 	claims = claims[claims['clean_claim'].str.len() != 0]
