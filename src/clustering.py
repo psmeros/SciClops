@@ -233,4 +233,3 @@ if __name__ == "__main__":
 	#disjoint_clustering(method='KMeans', dimension=10)
 	#disjoint_clustering(method='KMeans')
 	popularity_clustering(learn_transform=False, iterations=2)
-	exit()

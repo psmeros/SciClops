@@ -69,6 +69,7 @@ def matrix_preparation(representations, pca_dimensions=None):
 	tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
 	claims['popularity'] = claims.url.parallel_apply(lambda u: sum([tweets.loc[t]['popularity'] for t in G.predecessors(u) if t in tweets.index]))
 
+	claims.claim = claims.claim.apply(eval)
 	claims = claims.explode('claim')
 
 	claims['clean_claim'] = claims['claim'].parallel_apply(clean_claim)
@@ -107,4 +108,4 @@ def matrix_preparation(representations, pca_dimensions=None):
 
 
 if __name__ == "__main__":
-	matrix_preparation(representations=['textual','embeddings'], pca_dimensions=[2])
+	matrix_preparation(representations=['textual','embeddings'], pca_dimensions=[10])

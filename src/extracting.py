@@ -1,14 +1,12 @@
+import re
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import networkx as nx
-import pandas as pd
 import numpy as np
+import pandas as pd
 import spacy
 from simpletransformers.classification import ClassificationModel
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import precision_recall_fscore_support
-import re
 
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
@@ -65,7 +63,7 @@ def prepare_eval_dataset(gold_agreement):
 	df = df.rename(columns={'Input.sentence':'sentence', 'Input.golden_label':'golden_label', 'Input.type':'type', 'Answer.claim.label':'label', 'LifetimeApprovalRate':'approval'})
 
 	df = df.dropna()
-	df = df[df.approval.apply(lambda x: int(re.sub('\%.*', '', x))) != 0]
+	df = df[df.approval.apply(lambda x: int(re.sub(r'\%.*', '', x))) != 0]
 
 	#aggregate results from crowdworkers
 	df = pd.DataFrame(df.groupby(['sentence', 'type', 'golden_label'])['label'].apply(lambda x: (lambda c: (c.index[0], 'strong') if c.get(0) - c.get(1, default=0) > 1 else (c.index[0], 'weak') if c.get(0) - c.get(1, default=0) == 1 else np.nan)(x.value_counts())).apply(pd.Series))
@@ -102,9 +100,11 @@ def pred_BERT(model):
 	model = ClassificationModel('bert', model, use_cuda=False)
 
 	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
+	titles = articles[['url', 'title']].drop_duplicates(subset='url').rename(columns={'title': 'claim'})
 	articles = articles[['url', 'quotes']].drop_duplicates(subset='url')
 	articles.quotes = articles.quotes.apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
 	articles = articles.explode('quotes').rename(columns={'quotes': 'claim'})
+	articles = pd.concat([articles, titles])
 	articles = articles[~articles['claim'].isna()]
 
 	articles['label'], _ = model.predict(articles.claim)
