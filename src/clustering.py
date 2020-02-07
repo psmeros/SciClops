@@ -18,7 +18,7 @@ scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
 np.random.seed(42)
-NUM_CLUSTERS = 10
+NUM_CLUSTERS = 200
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -64,7 +64,7 @@ class ClusterNet(nn.Module):
 		return torch.norm(C_prime - C, p='fro') - gamma * (torch.norm(P, p='fro') + torch.norm(C, p='fro'))
 ############################### ######### ###############################
 
-def eval_clusters(cooc, papers, claims, top_k):
+def eval_clusters(cooc, papers, claims, method, top_k):
 	top_papers = np.unique((-papers).argsort(axis=0)[:top_k].flatten())
 	
 	P = papers[top_papers]
@@ -91,11 +91,11 @@ def eval_clusters(cooc, papers, claims, top_k):
 
 	v2 = v_measure_score(labels_expected, labels_inherited)
 
-	print('claims:', v1)
-	print('papers:', v2)
-	print('average:', (v1+v2)/2)
+	# print('claims:', v1)
+	# print('papers:', v2)
+	print(method, 'average:', (v1+v2)/2)
 
-def disjoint_clustering(method, top_k=5, dimension=None):
+def standalone_clustering(method, top_k=5, dimension=None):
 
 	if method == 'GMM':
 		cooc, papers, claims = load_matrices(representation='embeddings', dimension=dimension)
@@ -104,8 +104,9 @@ def disjoint_clustering(method, top_k=5, dimension=None):
 		papers = papers.values
 		claims = claims.values
 		
-		claims = GaussianMixture(NUM_CLUSTERS, covariance_type='spherical', tol=0.5, random_state=42).fit(claims).predict_proba(claims)
-		papers = GaussianMixture(NUM_CLUSTERS, covariance_type='spherical', tol=0.5, random_state=42).fit(papers).predict_proba(papers)
+		model = GaussianMixture(NUM_CLUSTERS, covariance_type='spherical', tol=0.5, random_state=42).fit(np.concatenate([claims, papers]))
+		claims = model.predict_proba(claims)
+		papers = model.predict_proba(papers)
 		
 	elif method == 'KMeans':
 		cooc, papers, claims = load_matrices(representation='embeddings', dimension=dimension)
@@ -114,8 +115,9 @@ def disjoint_clustering(method, top_k=5, dimension=None):
 		papers = papers.values
 		claims = claims.values
 		
-		p_cluster = KMeans(NUM_CLUSTERS, random_state=42).fit(papers).predict(papers)
-		c_cluster = KMeans(NUM_CLUSTERS, random_state=42).fit(claims).predict(claims)
+		model = KMeans(NUM_CLUSTERS, random_state=42).fit(np.concatenate([claims, papers]))
+		p_cluster = model.predict(papers)
+		c_cluster = model.predict(claims)
 		
 		claims = np.zeros((len(claims), NUM_CLUSTERS))
 		claims[np.arange(len(claims)), c_cluster] = 1
@@ -128,12 +130,11 @@ def disjoint_clustering(method, top_k=5, dimension=None):
 		papers = papers['clean_passage']
 		claims = claims['clean_claim']
 		
-		CV = CountVectorizer().fit(papers).fit(claims)
-		papers = CV.transform(papers)
-		claims = CV.transform(claims)
+		CV = CountVectorizer().fit(pd.concat([claims, papers]))
 
-		papers = LatentDirichletAllocation(n_components=NUM_CLUSTERS, n_jobs=-1).fit(papers).transform(papers)
-		claims = LatentDirichletAllocation(n_components=NUM_CLUSTERS, n_jobs=-1).fit(claims).transform(claims)
+		model = LatentDirichletAllocation(n_components=NUM_CLUSTERS, n_jobs=-1).fit(CV.transform(pd.concat([claims, papers])))
+		papers = model.transform(CV.transform(papers))
+		claims = model.transform(CV.transform(claims))
 
 	elif method == 'GSDMM':
 		cooc, papers, claims = load_matrices(representation='textual')
@@ -148,7 +149,7 @@ def disjoint_clustering(method, top_k=5, dimension=None):
 		claims[np.arange(len(claims)), np.array(c_cluster)] = 1
 
 
-	eval_clusters(cooc, papers, claims, top_k)
+	eval_clusters(cooc, papers, claims, method, top_k)
 
 def align_clustering(prior, learn_transform, top_k):
 
@@ -201,7 +202,7 @@ def align_clustering(prior, learn_transform, top_k):
 	else:
 		papers = model.P_prime.detach().numpy()
 	
-	eval_clusters(cooc, papers, claims, top_k)
+	eval_clusters(cooc, papers, claims, 'Align', top_k)
 
 	papers = pd.DataFrame(papers, index=papers_index)
 	claims = pd.DataFrame(claims, index=claims_index)
@@ -226,10 +227,10 @@ def popularity_clustering(learn_transform, iterations=1, top_k=5):
 
 
 if __name__ == "__main__":
-	#disjoint_clustering(method='LDA')
-	#disjoint_clustering(method='GSDMM')
-	#disjoint_clustering(method='GMM')
-	#disjoint_clustering(method='GMM', dimension=10)
-	#disjoint_clustering(method='KMeans', dimension=10)
-	#disjoint_clustering(method='KMeans')
-	popularity_clustering(learn_transform=False, iterations=2)
+	standalone_clustering(method='LDA')
+	#standalone_clustering(method='GSDMM')
+	standalone_clustering(method='GMM')
+	standalone_clustering(method='GMM', dimension=10)
+	standalone_clustering(method='KMeans', dimension=10)
+	standalone_clustering(method='KMeans')
+	#popularity_clustering(learn_transform=False, iterations=2)
