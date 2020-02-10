@@ -38,9 +38,9 @@ hidden = 50
 batch_size = 512
 gamma = 1.e-3
 
-class ClusterNet(nn.Module):
+class SingleClusterNet(nn.Module):
 	def __init__(self, clustering_type, init_clustering_method):
-		super(ClusterNet, self).__init__()
+		super(SingleClusterNet, self).__init__()
 		
 		self.clustering_type = clustering_type
 
@@ -88,14 +88,14 @@ class ClusterNet(nn.Module):
 			elif 'align_C' in self.clustering_type:
 				self.claims_clusters = nn.Parameter(nn.init.xavier_normal_(torch.Tensor(self.claims.shape[0], NUM_CLUSTERS)), requires_grad=True)
 
-	def compute_permutation(self):
+	def compute_permutation(self, _):
 		if 'transform_P' in self.clustering_type or 'align_P' in self.clustering_type: 
 			self.permutation = np.random.permutation(len(self.papers))	
 		elif 'transform_C' in self.clustering_type or 'align_C' in self.clustering_type:
 			self.permutation = np.random.permutation(len(self.claims))	
 		return self.permutation
 
-	def forward(self, batch):
+	def forward(self, batch, _):
 		if 'compute_C' in self.clustering_type:
 			L = self.cooc_unique[:, self.permutation[batch:batch+batch_size]]
 			C = self.claims_unique
@@ -136,6 +136,91 @@ class ClusterNet(nn.Module):
 	def loss(self, P, L, C):
 		C_prime = L @ P
 		return torch.norm(C_prime - C, p='fro') - gamma * (torch.norm(P, p='fro') + torch.norm(C, p='fro'))
+
+
+class CoordinateClusterNet(nn.Module):
+	def __init__(self, clustering_type, init_clustering_method):
+		super(CoordinateClusterNet, self).__init__()
+		
+		self.clustering_type = clustering_type
+
+		self.papers, self.claims, papers_clusters, claims_clusters, self.cooc = standalone_clustering(method=init_clustering_method)
+		
+		self.cooc_unique_C, self.index_C = np.unique(self.cooc, axis=0, return_index=True)
+		self.cooc_unique_P, self.index_P = np.unique(self.cooc, axis=1, return_index=True)
+
+		self.cooc_unique_C = torch.Tensor(self.cooc_unique_C.astype(float))
+		self.papers = torch.Tensor(self.papers.astype(float))
+		self.cooc_unique_P = torch.Tensor(self.cooc_unique_P.astype(float))
+		self.claims = torch.Tensor(self.claims.astype(float))
+
+		if 'coordinate-transform' in self.clustering_type:
+			self.claimsNet = nn.Sequential(
+				nn.Linear(self.claims.shape[1], hidden),
+				nn.BatchNorm1d(hidden),
+				nn.ReLU(),
+				nn.Linear(hidden, NUM_CLUSTERS),
+				nn.BatchNorm1d(NUM_CLUSTERS),
+				nn.Softmax(dim=1),
+			)
+			self.papersNet = nn.Sequential(
+				nn.Linear(self.papers.shape[1], hidden),
+				nn.BatchNorm1d(hidden),
+				nn.ReLU(),
+				nn.Linear(hidden, NUM_CLUSTERS),
+				nn.BatchNorm1d(NUM_CLUSTERS),
+				nn.Softmax(dim=1),
+			)
+			
+		elif 'coordinate-align' in self.clustering_type:
+			self.claims_clusters = nn.Parameter(nn.init.xavier_normal_(torch.Tensor(self.claims.shape[0], NUM_CLUSTERS)), requires_grad=True)
+			self.papers_clusters = nn.Parameter(nn.init.xavier_normal_(torch.Tensor(self.papers.shape[0], NUM_CLUSTERS)), requires_grad=True)
+
+		elif 'compute-align' in self.clustering_type:
+			self.papers_clusters = nn.Parameter(torch.Tensor(papers_clusters.astype(float)), requires_grad=True)
+			self.claims_clusters = nn.Parameter(torch.Tensor(claims_clusters.astype(float)), requires_grad=True)
+
+	def compute_permutation(self, epoch): 
+		self.permutation = np.random.permutation(len(self.papers)) if epoch%2==0 else np.random.permutation(len(self.claims))
+		return self.permutation
+
+	def forward(self, batch, epoch):
+		if epoch%2==0:
+			L = self.cooc_unique_C[:, self.permutation[batch:batch+batch_size]]
+			
+			if 'coordinate-align' in self.clustering_type or 'compute-align' in self.clustering_type:
+				C = torch.Tensor(self.claims_clusters[self.index_C].detach().numpy().astype(float))
+				P = self.papers_clusters[self.permutation[batch:batch+batch_size]]
+			elif 'coordinate-transform' in self.clustering_type:
+				C = torch.Tensor(self.claimsNet(self.claims[self.index_C]).detach().numpy().astype(float))
+				P = self.papersNet(self.papers[self.permutation[batch:batch+batch_size]])
+		else:
+			L = self.cooc_unique_P[self.permutation[batch:batch+batch_size]]
+			
+			if 'coordinate-align' in self.clustering_type or 'compute-align' in self.clustering_type:
+				P = torch.Tensor(self.papers_clusters[self.index_P].detach().numpy().astype(float))
+				C = self.claims_clusters[self.permutation[batch:batch+batch_size]]
+			elif 'coordinate-transform' in self.clustering_type:
+				P = torch.Tensor(self.papersNet(self.papers[self.index_P]).detach().numpy().astype(float))
+				C = self.claimsNet(self.claims[self.permutation[batch:batch+batch_size]])
+
+		return P, L, C
+
+	def final_clusters(self):
+		cooc = self.cooc
+		if 'coordinate-align' in self.clustering_type or 'compute-align' in self.clustering_type:
+			papers_clusters = self.papers_clusters.detach().numpy()
+			claims_clusters = self.claims_clusters.detach().numpy()
+		elif 'coordinate-transform' in self.clustering_type:
+			papers_clusters = self.papersNet(self.papers).detach().numpy()
+			claims_clusters = self.claimsNet(self.claims).detach().numpy()
+	
+		return papers_clusters, claims_clusters, cooc
+
+	def loss(self, P, L, C):
+		C_prime = L @ P
+		return torch.norm(C_prime - C, p='fro') - gamma * (torch.norm(P, p='fro') + torch.norm(C, p='fro'))
+
 ############################### ######### ###############################
 
 def eval_clusters(papers_clusters, claims_clusters, cooc):
@@ -227,16 +312,19 @@ def standalone_clustering(method):
 def align_clustering(clustering_type, init_clustering_method):
 
 	#Model training
-	model = ClusterNet(clustering_type, init_clustering_method)
+	if clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
+		model = SingleClusterNet(clustering_type, init_clustering_method)
+	elif clustering_type in ['coordinate-transform', 'coordinate-align', 'compute-align']:
+		model = CoordinateClusterNet(clustering_type, init_clustering_method)
 	optimizer = optim.Adam(model.parameters(), lr=learning_rate) 
 
 	for epoch in range(num_epochs):
-		permutation = model.compute_permutation()
+		permutation = model.compute_permutation(epoch)
 
 		mean_loss = []
 		for batch in range(0, len(permutation), batch_size):
 			optimizer.zero_grad()
-			P, L, C = model.forward(batch)
+			P, L, C = model.forward(batch, epoch)
 			loss = model.loss(P, L, C)
 			mean_loss.append(loss.detach().numpy())
 			loss.backward()
@@ -276,6 +364,13 @@ if __name__ == "__main__":
 
 	results = []
 	for clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
+		papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
+		average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
+		results += [(clustering_type, average_v)]
+	print(results)
+
+	results = []
+	for clustering_type in ['coordinate-transform', 'coordinate-align', 'compute-align']:
 		papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
 		average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
 		results += [(clustering_type, average_v)]
