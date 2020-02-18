@@ -298,8 +298,8 @@ def standalone_clustering(method):
 		cooc, papers, claims = load_matrices(representation='textual')
 		cooc = cooc.values
 
-		c_cluster = MovieGroupProcess(K=NUM_CLUSTERS).fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
-		p_cluster = MovieGroupProcess(K=NUM_CLUSTERS).fit(papers['clean_passage'], len(set([e for l in papers['clean_passage'].tolist() for e in l])))
+		c_cluster = MovieGroupProcess(K=NUM_CLUSTERS, n_iters=5).fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
+		p_cluster = MovieGroupProcess(K=NUM_CLUSTERS, n_iters=5).fit(papers['clean_passage'], len(set([e for l in papers['clean_passage'].tolist() for e in l])))
 		
 		claims_clusters = np.zeros((len(claims), NUM_CLUSTERS))
 		claims_clusters[np.arange(len(claims)), c_cluster] = 1
