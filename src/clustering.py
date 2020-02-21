@@ -18,7 +18,7 @@ scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
 np.random.seed(42)
-NUM_CLUSTERS = 200
+NUM_CLUSTERS = 20
 top_k = 5
 ############################### ######### ###############################
 
@@ -39,13 +39,14 @@ batch_size = 512
 gamma = 1.e-3
 
 class SingleClusterNet(nn.Module):
-	def __init__(self, clustering_type, init_clustering_method):
+	def __init__(self, clustering_type, init_clustering_method, save_clusters):
 		super(SingleClusterNet, self).__init__()
 		
 		self.clustering_type = clustering_type
+		self.save_clusters = save_clusters
 
 		if 'compute_C' in self.clustering_type:
-			self.papers, _, _, self.claims_clusters, self.cooc = standalone_clustering(method=init_clustering_method)
+			self.papers, _, _, self.claims_clusters, self.papers_index, self.claims_index, self.cooc = standalone_clustering(method=init_clustering_method)
 			
 			self.cooc_unique, index = np.unique(self.cooc, axis=0, return_index=True)
 			self.claims_unique = self.claims_clusters[index]
@@ -67,7 +68,7 @@ class SingleClusterNet(nn.Module):
 				self.papers_clusters = nn.Parameter(nn.init.xavier_normal_(torch.Tensor(self.papers.shape[0], NUM_CLUSTERS)), requires_grad=True)
 
 		elif 'compute_P' in self.clustering_type:
-			_, self.claims, self.papers_clusters, _, self.cooc = standalone_clustering(method=init_clustering_method)
+			_, self.claims, self.papers_clusters, _, self.papers_index, self.claims_index, self.cooc = standalone_clustering(method=init_clustering_method)
 			
 			self.cooc_unique, index = np.unique(self.cooc, axis=1, return_index=True)
 			self.papers_unique = self.papers_clusters[index]
@@ -131,6 +132,10 @@ class SingleClusterNet(nn.Module):
 			elif 'align_C' in self.clustering_type:
 				claims_clusters = self.claims_clusters.detach().numpy()
 
+		if self.save_clusters:
+			pd.DataFrame(papers_clusters, index=self.papers_index).to_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t')
+			pd.DataFrame(claims_clusters, index=self.claims_index).to_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
+
 		return papers_clusters, claims_clusters, cooc
 
 	def loss(self, P, L, C):
@@ -139,12 +144,13 @@ class SingleClusterNet(nn.Module):
 
 
 class CoordinateClusterNet(nn.Module):
-	def __init__(self, clustering_type, init_clustering_method):
+	def __init__(self, clustering_type, init_clustering_method, save_clusters):
 		super(CoordinateClusterNet, self).__init__()
 		
 		self.clustering_type = clustering_type
+		self.save_clusters = save_clusters
 
-		self.papers, self.claims, papers_clusters, claims_clusters, self.cooc = standalone_clustering(method=init_clustering_method)
+		self.papers, self.claims, papers_clusters, claims_clusters, self.papers_index, self.claims_index, self.cooc = standalone_clustering(method=init_clustering_method)
 		
 		self.cooc_unique_C, self.index_C = np.unique(self.cooc, axis=0, return_index=True)
 		self.cooc_unique_P, self.index_P = np.unique(self.cooc, axis=1, return_index=True)
@@ -214,7 +220,11 @@ class CoordinateClusterNet(nn.Module):
 		elif 'coordinate-transform' in self.clustering_type:
 			papers_clusters = self.papersNet(self.papers).detach().numpy()
 			claims_clusters = self.claimsNet(self.claims).detach().numpy()
-	
+
+		if self.save_clusters:
+			pd.DataFrame(papers_clusters, index=self.papers_index).to_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t')
+			pd.DataFrame(claims_clusters, index=self.claims_index).to_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
+
 		return papers_clusters, claims_clusters, cooc
 
 	def loss(self, P, L, C):
@@ -252,13 +262,15 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 
 	return (v1+v2)/2
 
-def standalone_clustering(method):
+def standalone_clustering(method, save_clusters=False):
 	dimension = 10 if method.startswith('PCA') else None
 
 	if method.endswith('GMM'):
 		cooc, papers, claims = load_matrices(representation='embeddings', dimension=dimension)
 
 		cooc = cooc.values
+		papers_index = papers.index
+		claims_index = claims.index
 		papers = papers.values
 		claims = claims.values
 		
@@ -270,6 +282,8 @@ def standalone_clustering(method):
 		cooc, papers, claims = load_matrices(representation='embeddings', dimension=dimension)
 
 		cooc = cooc.values
+		papers_index = papers.index
+		claims_index = claims.index		
 		papers = papers.values
 		claims = claims.values
 		
@@ -284,7 +298,9 @@ def standalone_clustering(method):
 
 	elif method == 'LDA':
 		cooc, papers, claims = load_matrices(representation='textual')
-		cooc = cooc.values		
+		cooc = cooc.values
+		papers_index = papers.index
+		claims_index = claims.index
 		papers = papers['clean_passage']
 		claims = claims['clean_claim']
 		
@@ -297,7 +313,9 @@ def standalone_clustering(method):
 	elif method == 'GSDMM':
 		cooc, papers, claims = load_matrices(representation='textual')
 		cooc = cooc.values
-
+		papers_index = papers.index
+		claims_index = claims.index
+		
 		c_cluster = MovieGroupProcess(K=NUM_CLUSTERS, n_iters=5).fit(claims['clean_claim'], len(set([e for l in claims['clean_claim'].tolist() for e in l])))
 		p_cluster = MovieGroupProcess(K=NUM_CLUSTERS, n_iters=5).fit(papers['clean_passage'], len(set([e for l in papers['clean_passage'].tolist() for e in l])))
 		
@@ -306,16 +324,20 @@ def standalone_clustering(method):
 		papers_clusters = np.zeros((len(papers), NUM_CLUSTERS))
 		papers_clusters[np.arange(len(papers)), p_cluster] = 1
 
-	return papers, claims, papers_clusters, claims_clusters, cooc
+	if save_clusters:
+		pd.DataFrame(papers_clusters, index=papers_index).to_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t')
+		pd.DataFrame(claims_clusters, index=claims_index).to_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
+
+	return papers, claims, papers_clusters, claims_clusters, papers_index, claims_index, cooc
 	
 
-def align_clustering(clustering_type, init_clustering_method):
+def align_clustering(clustering_type, init_clustering_method, save_clusters=False):
 
 	#Model training
 	if clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
-		model = SingleClusterNet(clustering_type, init_clustering_method)
+		model = SingleClusterNet(clustering_type, init_clustering_method, save_clusters)
 	elif clustering_type in ['coordinate-transform', 'coordinate-align', 'compute-align']:
-		model = CoordinateClusterNet(clustering_type, init_clustering_method)
+		model = CoordinateClusterNet(clustering_type, init_clustering_method, save_clusters)
 	optimizer = optim.Adam(model.parameters(), lr=learning_rate) 
 
 	for epoch in range(num_epochs):
@@ -330,8 +352,8 @@ def align_clustering(clustering_type, init_clustering_method):
 			loss.backward()
 			optimizer.step()
 
-		if epoch%1 == 0:
-			print(sum(mean_loss)/len(mean_loss))
+		# if epoch%1 == 0:
+		# 	print(sum(mean_loss)/len(mean_loss))
 
 	papers_clusters, claims_clusters, cooc = model.final_clusters()
 	return papers_clusters, claims_clusters, cooc
@@ -348,7 +370,7 @@ def align_clustering(clustering_type, init_clustering_method):
 # 		prior = [sum(claims[i]*popularity) for i in range(NUM_CLUSTERS)]
 # 		prior = [p/sum(prior) for p in prior]
 
-# 	papers.to_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t')
+# 	
 # 	claims.to_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
 
 
@@ -357,25 +379,23 @@ if __name__ == "__main__":
 	# for method in ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans']:
 	# 	if method == 'GSDMM':
 	# 		continue
-	# 	_, _, papers_clusters, claims_clusters, cooc = standalone_clustering(method=method)
+	# 	_, _, papers_clusters, claims_clusters, _, _, cooc = standalone_clustering(method=method)
 	# 	average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
 	# 	results += [(method, average_v)]
 	# print(results)
 
-	results = []
-	for clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
-		papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
-		average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
-		results += [(clustering_type, average_v)]
-	print(results)
+	# results = []
+	# for clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
+	# 	papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
+	# 	average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
+	# 	results += [(clustering_type, average_v)]
+	# print(results)
 
-	results = []
-	for clustering_type in ['coordinate-transform', 'coordinate-align', 'compute-align']:
-		papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
-		average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
-		results += [(clustering_type, average_v)]
-	print(results)
+	# results = []
+	# for clustering_type in ['coordinate-transform', 'coordinate-align', 'compute-align']:
+	# 	papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
+	# 	average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
+	# 	results += [(clustering_type, average_v)]
+	# print(results)
 
-	
-
-	#popularity_clustering(learn_transform=False, iterations=2)
+	align_clustering('compute_C_align_P', 'PCA-GMM', save_clusters=True)
