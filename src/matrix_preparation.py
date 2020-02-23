@@ -47,7 +47,7 @@ def clean_paper(text):
 ############################### ######### ###############################
 
 def matrix_preparation(representations, pca_dimensions=None):
-	pandarallel.initialize()
+	pandarallel.initialize(verbose=0)
 	
 	claims = pd.read_csv(sciclops_dir+'cache/claims_raw.tsv.bz2', sep='\t')
 
@@ -57,9 +57,11 @@ def matrix_preparation(representations, pca_dimensions=None):
 	papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
 
 	print('cleaning papers...')
-	papers['clean_passage'] = papers.title + ' ' + papers.full_text.parallel_apply(lambda w: w.split('\n')[0])
-	papers['clean_passage'] = papers['clean_passage'].parallel_apply(lambda x: clean_paper(x))
+	#papers['clean_passage'] = papers.title + ' ' + papers.full_text.parallel_apply(lambda w: w.split('\n')[0])
+	#papers['clean_passage'] = clean_paper(papers['clean_passage'])
+	papers['clean_passage'] = papers.title.parallel_apply(clean_paper)
 	papers = papers[papers['clean_passage'].str.len() != 0]
+	papers['popularity'] = papers.url.parallel_apply(lambda u: G.in_degree(u))
 	refs = set(papers['url'].unique())
 
 	print('cleaning claims...')	
@@ -77,7 +79,7 @@ def matrix_preparation(representations, pca_dimensions=None):
 	refs = set([e for l in claims['refs'].to_list() for e in l])
 	papers = papers[papers['url'].isin(refs)]
 
-	papers = papers.set_index('url')
+	papers = papers.set_index(['url', 'title', 'popularity'])
 	claims = claims.set_index(['url', 'claim', 'popularity'])
 	papers_index = papers.index
 	claims_index = claims.index

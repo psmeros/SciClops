@@ -18,7 +18,7 @@ scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
 np.random.seed(42)
-NUM_CLUSTERS = 20
+NUM_CLUSTERS = 200
 top_k = 5
 ############################### ######### ###############################
 
@@ -27,7 +27,7 @@ top_k = 5
 def load_matrices(representation, dimension=None):
 	cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
 	claims = pd.read_csv(sciclops_dir + 'cache/claims_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
-	papers = pd.read_csv(sciclops_dir + 'cache/papers_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col='url')
+	papers = pd.read_csv(sciclops_dir + 'cache/papers_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col=['url', 'title', 'popularity'])
 	return cooc, papers, claims
 
 
@@ -375,27 +375,29 @@ def align_clustering(clustering_type, init_clustering_method, save_clusters=Fals
 
 
 if __name__ == "__main__":
-	# results = []
-	# for method in ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans']:
-	# 	if method == 'GSDMM':
-	# 		continue
-	# 	_, _, papers_clusters, claims_clusters, _, _, cooc = standalone_clustering(method=method)
-	# 	average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
-	# 	results += [(method, average_v)]
-	# print(results)
+	compare = False
+	if compare:
+		results = []
+		for method in ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans']:
+			if method == 'GSDMM':
+				continue
+			_, _, papers_clusters, claims_clusters, _, _, cooc = standalone_clustering(method=method)
+			average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
+			results += [(method, average_v)]
+		print(results)
 
-	# results = []
-	# for clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
-	# 	papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
-	# 	average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
-	# 	results += [(clustering_type, average_v)]
-	# print(results)
+		results = []
+		for clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
+			papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
+			average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
+			results += [(clustering_type, average_v)]
+		print(results)
 
-	# results = []
-	# for clustering_type in ['coordinate-transform', 'coordinate-align', 'compute-align']:
-	# 	papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
-	# 	average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
-	# 	results += [(clustering_type, average_v)]
-	# print(results)
-
-	align_clustering('compute_C_align_P', 'PCA-GMM', save_clusters=True)
+		results = []
+		for clustering_type in ['coordinate-transform', 'coordinate-align', 'compute-align']:
+			papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
+			average_v = eval_clusters(papers_clusters, claims_clusters, cooc)
+			results += [(clustering_type, average_v)]
+		print(results)
+	else:
+		align_clustering('compute-align', 'PCA-GMM', save_clusters=True)
