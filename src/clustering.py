@@ -18,7 +18,7 @@ scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
 np.random.seed(42)
-NUM_CLUSTERS = 200
+NUM_CLUSTERS = 20
 top_k = 5
 ############################### ######### ###############################
 
