@@ -17,6 +17,7 @@ from gsdmm import MovieGroupProcess
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
+hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
 
 nlp = spacy.load('en_core_web_lg')
 np.random.seed(42)
@@ -34,10 +35,10 @@ def load_matrices(representation, dimension=None):
 
 
 # Hyper Parameters
-num_epochs = 300
-learning_rate = 1.e-3
+num_epochs = 500
+learning_rate = 1.e-6
 hidden = 50
-batch_size = 512
+batch_size = 64
 gamma = 1.e-3
 
 class SingleClusterNet(nn.Module):
@@ -65,8 +66,7 @@ class SingleClusterNet(nn.Module):
 					nn.BatchNorm1d(hidden),
 					nn.ReLU(),
 					nn.Linear(hidden, NUM_CLUSTERS),
-					nn.BatchNorm1d(NUM_CLUSTERS),
-					nn.ReLU(),
+					nn.Softmax(dim=1)
 				)
 			elif 'align_P' in self.clustering_type:
 				self.papers_clusters = nn.Parameter(nn.init.eye_(torch.Tensor(self.papers.shape[0], NUM_CLUSTERS)), requires_grad=True)
@@ -90,8 +90,7 @@ class SingleClusterNet(nn.Module):
 					nn.BatchNorm1d(hidden),
 					nn.ReLU(),
 					nn.Linear(hidden, NUM_CLUSTERS),
-					nn.BatchNorm1d(NUM_CLUSTERS),
-					nn.ReLU(),
+					nn.Softmax(dim=1)
 				)
 			elif 'align_C' in self.clustering_type:
 				self.claims_clusters = nn.Parameter(nn.init.eye_(torch.Tensor(self.claims.shape[0], NUM_CLUSTERS)), requires_grad=True)
@@ -170,19 +169,15 @@ class CoordinateClusterNet(nn.Module):
 		if 'coordinate-transform' in self.clustering_type:
 			self.claimsNet = nn.Sequential(
 				nn.Linear(self.claims.shape[1], hidden),
-				nn.BatchNorm1d(hidden),
 				nn.ReLU(),
 				nn.Linear(hidden, NUM_CLUSTERS),
-				nn.BatchNorm1d(NUM_CLUSTERS),
-				nn.ReLU(),
+				nn.Softmax(dim=1)
 			)
 			self.papersNet = nn.Sequential(
 				nn.Linear(self.papers.shape[1], hidden),
-				nn.BatchNorm1d(hidden),
 				nn.ReLU(),
 				nn.Linear(hidden, NUM_CLUSTERS),
-				nn.BatchNorm1d(NUM_CLUSTERS),
-				nn.ReLU(),
+				nn.Softmax(dim=1)
 			)
 			
 		elif 'coordinate-align' in self.clustering_type:
@@ -240,13 +235,15 @@ class CoordinateClusterNet(nn.Module):
 ############################### ######### ###############################
 
 def eval_clusters(papers_clusters, claims_clusters, cooc):
+	#papers_clusters, claims_clusters, cooc = align_clustering('coordinate-align', 'PCA-GMM')
+
 	papers_index = papers_clusters.index
 	claims_index = claims_clusters.index
 	papers_clusters = papers_clusters.values
 	claims_clusters = claims_clusters.values
 
 	# V-Measure
-	threshold = .4
+	threshold = .5
 	top_papers = np.any(papers_clusters > threshold, axis=1)
 
 	P = papers_clusters[top_papers]
@@ -276,18 +273,37 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 
 	# #STS
 	papers_clusters = pd.DataFrame(papers_clusters, index=papers_index)[top_papers]
+	papers_clusters_repr = papers_clusters.reset_index(['url', 'popularity'], drop=True).idxmax().reset_index().rename(columns={'index':'cluster', 0:'title'})
 	papers_clusters = papers_clusters.idxmax(axis=1)
 	papers_clusters = papers_clusters.reset_index().drop(['url', 'popularity'], axis=1).rename(columns={0:'cluster'})
 
 	claims_clusters = pd.DataFrame(claims_clusters, index=claims_index)[top_claims]
+	claims_clusters_repr = claims_clusters.reset_index(['url', 'popularity'], drop=True).idxmax().reset_index().rename(columns={'index':'cluster', 0:'claim'})
 	claims_clusters = claims_clusters.idxmax(axis=1)
 	claims_clusters = claims_clusters.reset_index().drop(['url', 'popularity'], axis=1).rename(columns={0:'cluster'})
 
-	cartesian = claims_clusters.merge(papers_clusters).drop('cluster', axis=1)
-	cartesian['sim'] = cartesian.apply(lambda p: nlp(p.claim).similarity(nlp(p.title)), axis=1)
-	sts = np.mean([cartesian.groupby('claim')['sim'].max().mean(), cartesian.groupby('title')['sim'].max().mean()])
-	
-	
+	def compute_sts(text_1, text_2):
+		semantic = nlp(text_1).similarity(nlp(text_2))
+		text_1 = set(text_1.split()).intersection(hn_vocabulary)
+		text_2 = set(text_2.split()).intersection(hn_vocabulary)
+		jaccard = len(text_1.intersection(text_2)) / (len(text_1.union(text_2)) or 1)
+		return np.mean([semantic,jaccard])
+
+	papers = papers_clusters.merge(claims_clusters_repr)
+	mean_pc = papers.apply(lambda p: compute_sts(p.claim, p.title), axis=1).median()
+
+	claims = claims_clusters.merge(papers_clusters_repr)
+	mean_cp = claims.apply(lambda p: compute_sts(p.claim, p.title), axis=1).median()
+
+	# papers = papers_clusters.merge(papers_clusters_repr, on='cluster')
+	# mean_pp = papers.apply(lambda p: compute_sts(p.title_x, p.title_y), axis=1).mean()
+
+	# claims = claims_clusters.merge(claims_clusters_repr, on='cluster')
+	# mean_cc = claims.apply(lambda p: compute_sts(p.claim_x, p.claim_y), axis=1).mean()
+
+
+	sts = np.mean([mean_cp, mean_pc])
+		
 	return v, sts
 
 def standalone_clustering(method):
@@ -407,24 +423,24 @@ if __name__ == "__main__":
 	compare = True
 	if compare:
 		
-		results = {}
-		for clustering_type in ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans']:
-			if clustering_type == 'GSDMM':
-				continue
-			_, _, papers_clusters, claims_clusters, cooc = standalone_clustering(clustering_type)
-			v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
-			results[clustering_type] = (v, sts)
-		print(results)
+		# results = {}
+		# for clustering_type in ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans']:
+		# 	if clustering_type == 'GSDMM':
+		# 		continue
+		# 	_, _, papers_clusters, claims_clusters, cooc = standalone_clustering(clustering_type)
+		# 	v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
+		# 	results[clustering_type] = (v, sts)
+		# print(results)
+
+		# results = {}
+		# for clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
+		# 	papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
+		# 	v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
+		# 	results[clustering_type] = (v, sts)
+		# print(results)
 
 		results = {}
-		for clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
-			papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
-			v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
-			results[clustering_type] = (v, sts)
-		print(results)
-
-		results = {}
-		for clustering_type in ['coordinate-transform', 'coordinate-align', 'compute-align']:
+		for clustering_type in ['compute-align']:#, 'coordinate-transform', 'coordinate-align']:
 			papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
 			v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
 			results[clustering_type] = (v, sts)
