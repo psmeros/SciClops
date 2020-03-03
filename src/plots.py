@@ -12,7 +12,7 @@ sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
 CLUSTER = {'num':2, 'label':'stress'}
 CLUSTER = {'num':5, 'label':'abortion'}
-CLUSTER = {'num':15, 'label':'tobacco'}
+#CLUSTER = {'num':15, 'label':'tobacco'}
 TOP_K = 10
 ############################### ######### ###############################
 
@@ -65,7 +65,7 @@ fig = go.Figure(data=[go.Sankey(
       line = dict(color = "black", width = 0.5),
       label =  nodes['label'],
       color =  nodes['color'],
-	  hoverlabel = dict(font = dict(size = 6))
+	  hoverlabel = dict(font = dict(size = 8))
     ),
     # Add links
     link = dict(
@@ -74,7 +74,14 @@ fig = go.Figure(data=[go.Sankey(
       value =  links['popularity'],
       label =  links['text'],
 	  #color=  links['color'],
-	  hoverlabel = dict(font = dict(size = 6))
+    hoverlabel = dict(font = dict(size = 8))
+    
   ))])
+
+fig.update_layout(
+    autosize=False,
+    width=1000,
+    height=1000,
+)
 
 fig.show()

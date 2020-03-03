@@ -35,8 +35,8 @@ def load_matrices(representation, dimension=None):
 
 
 # Hyper Parameters
-num_epochs = 500
-learning_rate = 1.e-6
+num_epochs = 400
+learning_rate = 1.e-3
 hidden = 50
 batch_size = 64
 gamma = 1.e-3
@@ -235,7 +235,7 @@ class CoordinateClusterNet(nn.Module):
 ############################### ######### ###############################
 
 def eval_clusters(papers_clusters, claims_clusters, cooc):
-	#papers_clusters, claims_clusters, cooc = align_clustering('coordinate-align', 'PCA-GMM')
+	#papers_clusters, claims_clusters, cooc = align_clustering('compute-align', 'PCA-GMM')
 
 	papers_index = papers_clusters.index
 	claims_index = claims_clusters.index
@@ -243,7 +243,7 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	claims_clusters = claims_clusters.values
 
 	# V-Measure
-	threshold = .5
+	threshold = .0
 	top_papers = np.any(papers_clusters > threshold, axis=1)
 
 	P = papers_clusters[top_papers]
@@ -284,22 +284,24 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 
 	def compute_sts(text_1, text_2):
 		semantic = nlp(text_1).similarity(nlp(text_2))
-		text_1 = set(text_1.split()).intersection(hn_vocabulary)
-		text_2 = set(text_2.split()).intersection(hn_vocabulary)
-		jaccard = len(text_1.intersection(text_2)) / (len(text_1.union(text_2)) or 1)
-		return np.mean([semantic,jaccard])
+		# text_1 = set(text_1.split()).intersection(hn_vocabulary)
+		# text_2 = set(text_2.split()).intersection(hn_vocabulary)
+		#jaccard = len(text_1.intersection(text_2)) / (len(text_1.union(text_2)) or 1)
+		return semantic#np.mean([semantic,jaccard])
 
 	papers = papers_clusters.merge(claims_clusters_repr)
-	mean_pc = papers.apply(lambda p: compute_sts(p.claim, p.title), axis=1).median()
+	papers['sim'] = papers.apply(lambda p: compute_sts(p.claim, p.title), axis=1)
+	mean_pc = papers.groupby('cluster')['sim'].median().mean()
 
 	claims = claims_clusters.merge(papers_clusters_repr)
-	mean_cp = claims.apply(lambda p: compute_sts(p.claim, p.title), axis=1).median()
+	claims['sim'] = claims.apply(lambda p: compute_sts(p.claim, p.title), axis=1)
+	mean_cp = claims.groupby('cluster')['sim'].median().mean()
 
 	# papers = papers_clusters.merge(papers_clusters_repr, on='cluster')
-	# mean_pp = papers.apply(lambda p: compute_sts(p.title_x, p.title_y), axis=1).mean()
+	# mean_pp = papers.apply(lambda p: compute_sts(p.title_x, p.title_y), axis=1).median()
 
 	# claims = claims_clusters.merge(claims_clusters_repr, on='cluster')
-	# mean_cc = claims.apply(lambda p: compute_sts(p.claim_x, p.claim_y), axis=1).mean()
+	# mean_cc = claims.apply(lambda p: compute_sts(p.claim_x, p.claim_y), axis=1).median()
 
 
 	sts = np.mean([mean_cp, mean_pc])
@@ -440,7 +442,7 @@ if __name__ == "__main__":
 		# print(results)
 
 		results = {}
-		for clustering_type in ['compute-align']:#, 'coordinate-transform', 'coordinate-align']:
+		for clustering_type in ['compute-align', 'coordinate-transform', 'coordinate-align']:
 			papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
 			v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
 			results[clustering_type] = (v, sts)
