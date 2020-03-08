@@ -22,7 +22,9 @@ hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt
 nlp = spacy.load('en_core_web_lg')
 np.random.seed(42)
 torch.manual_seed(42)
-NUM_CLUSTERS = 20
+NUM_CLUSTERS = 200
+EVAL_THRESHOLD = .9
+
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -35,11 +37,11 @@ def load_matrices(representation, dimension=None):
 
 
 # Hyper Parameters
-num_epochs = 400
-learning_rate = 1.e-3
+num_epochs = 50
+learning_rate = 1.e-5
 hidden = 50
 batch_size = 64
-gamma = 1.e-3
+gamma = .1
 
 class SingleClusterNet(nn.Module):
 	def __init__(self, clustering_type, init_clustering_method):
@@ -102,7 +104,7 @@ class SingleClusterNet(nn.Module):
 			self.permutation = np.random.permutation(len(self.claims))	
 		return self.permutation
 
-	def forward(self, batch, _):
+	def forward(self, batch):
 		if 'compute_C' in self.clustering_type:
 			L = self.cooc_unique[:, self.permutation[batch:batch+batch_size]]
 			C = self.claims_unique
@@ -157,7 +159,8 @@ class CoordinateClusterNet(nn.Module):
 		self.papers, self.claims, papers_clusters, claims_clusters, self.cooc = standalone_clustering(method=init_clustering_method)
 		
 		self.papers_index = papers_clusters.index
-		self.claims_index = claims_clusters.index		
+		self.claims_index = claims_clusters.index
+
 		self.cooc_unique_C, self.index_C = np.unique(self.cooc, axis=0, return_index=True)
 		self.cooc_unique_P, self.index_P = np.unique(self.cooc, axis=1, return_index=True)
 
@@ -185,18 +188,26 @@ class CoordinateClusterNet(nn.Module):
 			self.papers_clusters = nn.Parameter(nn.init.eye_(torch.Tensor(self.papers.shape[0], NUM_CLUSTERS)), requires_grad=True)
 
 		elif 'compute-align' in self.clustering_type:
+			self.papers_clusters_orig = torch.Tensor(papers_clusters.values.astype(float))
+			self.claims_clusters_orig = torch.Tensor(claims_clusters.values.astype(float))
+
 			self.papers_clusters = nn.Parameter(torch.Tensor(papers_clusters.values.astype(float)), requires_grad=True)
 			self.claims_clusters = nn.Parameter(torch.Tensor(claims_clusters.values.astype(float)), requires_grad=True)
 
 	def compute_permutation(self, epoch): 
 		self.permutation = np.random.permutation(len(self.papers)) if epoch%2==0 else np.random.permutation(len(self.claims))
+		self.epoch = epoch
 		return self.permutation
 
-	def forward(self, batch, epoch):
-		if epoch%2==0:
+	def forward(self, batch):
+		if self.epoch%2==0:
 			L = self.cooc_unique_C[:, self.permutation[batch:batch+batch_size]]
-			
-			if 'coordinate-align' in self.clustering_type or 'compute-align' in self.clustering_type:
+
+			if  'compute-align' in self.clustering_type:
+				C = torch.Tensor(self.claims_clusters[self.index_C].detach().numpy().astype(float))
+				P = self.papers_clusters[self.permutation[batch:batch+batch_size]]
+				self.P_orig = self.papers_clusters_orig[self.permutation[batch:batch+batch_size]]
+			elif 'coordinate-align' in self.clustering_type:
 				C = torch.Tensor(self.claims_clusters[self.index_C].detach().numpy().astype(float))
 				P = self.papers_clusters[self.permutation[batch:batch+batch_size]]
 			elif 'coordinate-transform' in self.clustering_type:
@@ -205,7 +216,11 @@ class CoordinateClusterNet(nn.Module):
 		else:
 			L = self.cooc_unique_P[self.permutation[batch:batch+batch_size]]
 			
-			if 'coordinate-align' in self.clustering_type or 'compute-align' in self.clustering_type:
+			if'compute-align' in self.clustering_type:
+				P = torch.Tensor(self.papers_clusters[self.index_P].detach().numpy().astype(float))
+				C = self.claims_clusters[self.permutation[batch:batch+batch_size]]
+				self.C_orig = self.claims_clusters_orig[self.permutation[batch:batch+batch_size]]
+			elif 'coordinate-align' in self.clustering_type:
 				P = torch.Tensor(self.papers_clusters[self.index_P].detach().numpy().astype(float))
 				C = self.claims_clusters[self.permutation[batch:batch+batch_size]]
 			elif 'coordinate-transform' in self.clustering_type:
@@ -229,8 +244,13 @@ class CoordinateClusterNet(nn.Module):
 		return papers_clusters, claims_clusters, cooc
 
 	def loss(self, P, L, C):
-		C_prime = L @ P
-		return torch.norm(C_prime - C, p='fro') - gamma * (torch.norm(P, p='fro') + torch.norm(C, p='fro'))
+		if 'coordinate' in self.clustering_type:
+			return torch.norm((L @ P) - C, p='fro') - gamma * (torch.norm(P, p='fro') + torch.norm(C, p='fro'))
+		elif 'compute' in self.clustering_type:
+			if self.epoch%2==0:
+				return gamma * torch.norm((L @ P) - C, p='fro') + (1 - gamma) * torch.norm(self.P_orig - P, p='fro')
+			else:
+				return gamma * torch.norm((L @ P) - C, p='fro') + (1 - gamma) * torch.norm(self.C_orig - C, p='fro')
 
 ############################### ######### ###############################
 
@@ -243,8 +263,8 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	claims_clusters = claims_clusters.values
 
 	# V-Measure
-	threshold = .0
-	top_papers = np.any(papers_clusters > threshold, axis=1)
+	thr = np.sort(papers_clusters, axis=None)[-int(EVAL_THRESHOLD*len(papers_clusters))]
+	top_papers = np.any(papers_clusters >= thr, axis=1)
 
 	P = papers_clusters[top_papers]
 	L = cooc[:, top_papers]
@@ -257,7 +277,8 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 
 	v1 = v_measure_score(labels_expected, labels_inherited)
 
-	top_claims = np.any(claims_clusters > threshold, axis=1)
+	thr = np.sort(claims_clusters, axis=None)[-int(EVAL_THRESHOLD*len(claims_clusters))]
+	top_claims = np.any(claims_clusters >= thr, axis=1)
 
 	C = claims_clusters[top_claims]
 	L = cooc[top_claims]
@@ -283,11 +304,14 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	claims_clusters = claims_clusters.reset_index().drop(['url', 'popularity'], axis=1).rename(columns={0:'cluster'})
 
 	def compute_sts(text_1, text_2):
-		semantic = nlp(text_1).similarity(nlp(text_2))
+		#semantic = nlp(text_1).similarity(nlp(text_2))
 		# text_1 = set(text_1.split()).intersection(hn_vocabulary)
 		# text_2 = set(text_2.split()).intersection(hn_vocabulary)
+		
+		inter = len(set(text_1.split()).intersection(set(text_2.split())).intersection(hn_vocabulary))
+		inter = 1 if inter else 0
 		#jaccard = len(text_1.intersection(text_2)) / (len(text_1.union(text_2)) or 1)
-		return semantic#np.mean([semantic,jaccard])
+		return inter #np.mean([semantic,jaccard])
 
 	papers = papers_clusters.merge(claims_clusters_repr)
 	papers['sim'] = papers.apply(lambda p: compute_sts(p.claim, p.title), axis=1)
@@ -391,7 +415,7 @@ def align_clustering(clustering_type, init_clustering_method):
 		mean_loss = []
 		for batch in range(0, len(permutation), batch_size):
 			optimizer.zero_grad()
-			P, L, C = model.forward(batch, epoch)
+			P, L, C = model.forward(batch)
 			loss = model.loss(P, L, C)
 			mean_loss.append(loss.detach().numpy())
 			loss.backward()
@@ -425,21 +449,21 @@ if __name__ == "__main__":
 	compare = True
 	if compare:
 		
-		# results = {}
-		# for clustering_type in ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans']:
-		# 	if clustering_type == 'GSDMM':
-		# 		continue
-		# 	_, _, papers_clusters, claims_clusters, cooc = standalone_clustering(clustering_type)
-		# 	v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
-		# 	results[clustering_type] = (v, sts)
-		# print(results)
+		results = {}
+		for clustering_type in ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans']:
+			if clustering_type == 'GSDMM':
+				continue
+			_, _, papers_clusters, claims_clusters, cooc = standalone_clustering(clustering_type)
+			v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
+			results[clustering_type] = (v, sts)
+		print(results)
 
-		# results = {}
-		# for clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
-		# 	papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
-		# 	v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
-		# 	results[clustering_type] = (v, sts)
-		# print(results)
+		results = {}
+		for clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
+			papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
+			v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
+			results[clustering_type] = (v, sts)
+		print(results)
 
 		results = {}
 		for clustering_type in ['compute-align', 'coordinate-transform', 'coordinate-align']:

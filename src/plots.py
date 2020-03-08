@@ -1,6 +1,4 @@
-import json
 import re
-import urllib
 from pathlib import Path
 from urllib.parse import urlsplit
 
