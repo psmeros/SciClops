@@ -9,6 +9,7 @@ from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.mixture import GaussianMixture
 from sklearn.cluster import KMeans
 from sklearn.metrics.cluster import v_measure_score
+from sklearn.metrics.pairwise import cosine_similarity
 from torch import optim
 import spacy
 
@@ -17,13 +18,13 @@ from gsdmm import MovieGroupProcess
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
-hn_vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
+hn_vocabulary = set(map(str.lower, open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()))
 
 nlp = spacy.load('en_core_web_lg')
 np.random.seed(42)
 torch.manual_seed(42)
-NUM_CLUSTERS = 200
-EVAL_THRESHOLD = .9
+NUM_CLUSTERS = 20
+EVAL_THRESHOLD = 100
 
 ############################### ######### ###############################
 
@@ -38,10 +39,10 @@ def load_matrices(representation, dimension=None):
 
 # Hyper Parameters
 num_epochs = 50
-learning_rate = 1.e-5
+learning_rate = 1.e-3
 hidden = 50
-batch_size = 64
-gamma = .1
+batch_size = 128
+gamma = 0.1
 
 class SingleClusterNet(nn.Module):
 	def __init__(self, clustering_type, init_clustering_method):
@@ -263,8 +264,7 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	claims_clusters = claims_clusters.values
 
 	# V-Measure
-	thr = np.sort(papers_clusters, axis=None)[-int(EVAL_THRESHOLD*len(papers_clusters))]
-	top_papers = np.any(papers_clusters >= thr, axis=1)
+	top_papers = np.unique((-papers_clusters).argsort(axis=0)[:EVAL_THRESHOLD].flatten())
 
 	P = papers_clusters[top_papers]
 	L = cooc[:, top_papers]
@@ -277,8 +277,7 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 
 	v1 = v_measure_score(labels_expected, labels_inherited)
 
-	thr = np.sort(claims_clusters, axis=None)[-int(EVAL_THRESHOLD*len(claims_clusters))]
-	top_claims = np.any(claims_clusters >= thr, axis=1)
+	top_claims = np.unique((-claims_clusters).argsort(axis=0)[:EVAL_THRESHOLD].flatten())
 
 	C = claims_clusters[top_claims]
 	L = cooc[top_claims]
@@ -292,34 +291,44 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	v2 = v_measure_score(labels_expected, labels_inherited)
 	v = np.mean([v1, v2])
 
-	# #STS
-	papers_clusters = pd.DataFrame(papers_clusters, index=papers_index)[top_papers]
+	#STS
+	papers_clusters = pd.DataFrame(papers_clusters[top_papers], index=papers_index[top_papers])
 	papers_clusters_repr = papers_clusters.reset_index(['url', 'popularity'], drop=True).idxmax().reset_index().rename(columns={'index':'cluster', 0:'title'})
 	papers_clusters = papers_clusters.idxmax(axis=1)
 	papers_clusters = papers_clusters.reset_index().drop(['url', 'popularity'], axis=1).rename(columns={0:'cluster'})
 
-	claims_clusters = pd.DataFrame(claims_clusters, index=claims_index)[top_claims]
+	claims_clusters = pd.DataFrame(claims_clusters[top_claims], index=claims_index[top_claims])
 	claims_clusters_repr = claims_clusters.reset_index(['url', 'popularity'], drop=True).idxmax().reset_index().rename(columns={'index':'cluster', 0:'claim'})
 	claims_clusters = claims_clusters.idxmax(axis=1)
 	claims_clusters = claims_clusters.reset_index().drop(['url', 'popularity'], axis=1).rename(columns={0:'cluster'})
 
 	def compute_sts(text_1, text_2):
 		#semantic = nlp(text_1).similarity(nlp(text_2))
-		# text_1 = set(text_1.split()).intersection(hn_vocabulary)
-		# text_2 = set(text_2.split()).intersection(hn_vocabulary)
+		text_1 = pd.Series(list(set(text_1.split()).intersection(hn_vocabulary)))
+		text_2 = pd.Series(list(set(text_2.split()).intersection(hn_vocabulary)))
 		
-		inter = len(set(text_1.split()).intersection(set(text_2.split())).intersection(hn_vocabulary))
-		inter = 1 if inter else 0
+		if text_1.empty or text_2.empty:
+			sim = nlp(''.join(text_1)).similarity(nlp(''.join(text_2)))
+		elif len(set(text_1).intersection(set(text_2))) > 0:
+			sim = 1
+		else:
+			text_1 = np.vstack(text_1.apply(lambda t: nlp(t).vector))
+			text_2 = np.vstack(text_2.apply(lambda t: nlp(t).vector))
+			sim = cosine_similarity(text_1, text_2).max()
+			
+		return sim
+		#inter = len(set(text_1.split()).intersection(set(text_2.split())).intersection(hn_vocabulary))
+		#inter = 1 if inter else 0
 		#jaccard = len(text_1.intersection(text_2)) / (len(text_1.union(text_2)) or 1)
-		return inter #np.mean([semantic,jaccard])
+		#np.mean([semantic,jaccard])
 
 	papers = papers_clusters.merge(claims_clusters_repr)
 	papers['sim'] = papers.apply(lambda p: compute_sts(p.claim, p.title), axis=1)
-	mean_pc = papers.groupby('cluster')['sim'].median().mean()
+	mean_pc = papers.groupby('cluster')['sim'].median().sort_values(ascending=False)[:int(NUM_CLUSTERS/2)].median()
 
 	claims = claims_clusters.merge(papers_clusters_repr)
 	claims['sim'] = claims.apply(lambda p: compute_sts(p.claim, p.title), axis=1)
-	mean_cp = claims.groupby('cluster')['sim'].median().mean()
+	mean_cp = claims.groupby('cluster')['sim'].median().sort_values(ascending=False)[:int(NUM_CLUSTERS/2)].median()
 
 	# papers = papers_clusters.merge(papers_clusters_repr, on='cluster')
 	# mean_pp = papers.apply(lambda p: compute_sts(p.title_x, p.title_y), axis=1).median()
@@ -449,24 +458,24 @@ if __name__ == "__main__":
 	compare = True
 	if compare:
 		
-		results = {}
-		for clustering_type in ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans']:
-			if clustering_type == 'GSDMM':
-				continue
-			_, _, papers_clusters, claims_clusters, cooc = standalone_clustering(clustering_type)
-			v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
-			results[clustering_type] = (v, sts)
-		print(results)
+		# results = {}
+		# for clustering_type in ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans']:
+		# 	if clustering_type == 'GSDMM':
+		# 		continue
+		# 	_, _, papers_clusters, claims_clusters, cooc = standalone_clustering(clustering_type)
+		# 	v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
+		# 	results[clustering_type] = (v, sts)
+		# print(results)
+
+		# results = {}
+		# for clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
+		# 	papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
+		# 	v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
+		# 	results[clustering_type] = (v, sts)
+		# print(results)
 
 		results = {}
-		for clustering_type in ['compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C']:
-			papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
-			v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
-			results[clustering_type] = (v, sts)
-		print(results)
-
-		results = {}
-		for clustering_type in ['compute-align', 'coordinate-transform', 'coordinate-align']:
+		for clustering_type in ['compute-align']:#, 'coordinate-transform', 'coordinate-align']:
 			papers_clusters, claims_clusters, cooc = align_clustering(clustering_type, 'PCA-GMM')
 			v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
 			results[clustering_type] = (v, sts)
