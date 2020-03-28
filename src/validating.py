@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from rdflib import Graph
-
 ############################### CONSTANTS ###############################
 
 sciclops_dir = str(Path.home()) + '/data/sciclops/' 
@@ -30,17 +28,7 @@ hn_vocabulary = set(map(str.lower, open(sciclops_dir + 'small_files/hn_vocabular
 
 ############################### ######### ###############################
 
+import pandas as pd
 
-g = Graph()
-g.parse(sciclops_dir + 'small_files/claimKG/v2.ttl', format='n3')
 
-qres = g.query(
-    """SELECT DISTINCT ?aname ?bname
-       WHERE {
-          ?a foaf:knows ?b .
-          ?a foaf:name ?aname .
-          ?b foaf:name ?bname .
-       }""")
-
-for row in qres:
-    print("%s knows %s" % row)
+pd.read_csv(sciclops_dir+'small_files/claimKG/claims.csv')
