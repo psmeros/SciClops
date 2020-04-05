@@ -24,7 +24,7 @@ nlp = spacy.load('en_core_web_lg')
 np.random.seed(42)
 torch.manual_seed(42)
 #NUM_CLUSTERS = 20
-EVAL_THRESHOLD = 100
+#EVAL_THRESHOLD = 100
 
 # Hyper Parameters
 num_epochs = 50
@@ -308,7 +308,8 @@ class ClusterNet(nn.Module):
 
 def eval_clusters(papers_clusters, claims_clusters, cooc):
 	#papers_clusters, claims_clusters, cooc = compute_clusterings('compute-align', 'PCA-GMM')
-
+	EVAL_THRESHOLD = 10*NUM_CLUSTERS
+	
 	papers_index = papers_clusters.index
 	claims_index = claims_clusters.index
 	papers_clusters = papers_clusters.values
