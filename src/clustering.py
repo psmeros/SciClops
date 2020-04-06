@@ -371,11 +371,11 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 
 	papers = papers_clusters.merge(claims_clusters_repr)
 	papers['sim'] = papers.apply(lambda p: compute_sts(p.claim, p.title), axis=1)
-	mean_pc = papers.groupby('cluster')['sim'].median().sort_values(ascending=False)[:int(NUM_CLUSTERS/2)].median()
+	mean_pc = papers.groupby('cluster')['sim'].median().sort_values(ascending=False)[:int(0.7*NUM_CLUSTERS)].median()
 
 	claims = claims_clusters.merge(papers_clusters_repr)
 	claims['sim'] = claims.apply(lambda p: compute_sts(p.claim, p.title), axis=1)
-	mean_cp = claims.groupby('cluster')['sim'].median().sort_values(ascending=False)[:int(NUM_CLUSTERS/2)].median()
+	mean_cp = claims.groupby('cluster')['sim'].median().sort_values(ascending=False)[:int(0.7*NUM_CLUSTERS)].median()
 
 	# papers = papers_clusters.merge(papers_clusters_repr, on='cluster')
 	# mean_pp = papers.apply(lambda p: compute_sts(p.title_x, p.title_y), axis=1).median()
@@ -424,9 +424,9 @@ def compute_clusterings(clustering_type, init_clustering_method=None):
 if __name__ == "__main__":
 	compare = True
 	if compare:
-		clustering_types = ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans', 'compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C', 'coordinate-align', 'coordinate-transform', 'compute-align-0', 'compute-align-0.5', 'compute-align-1']
+		clustering_types = ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans', 'compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C', 'coordinate-align', 'coordinate-transform', 'compute-align-0.1', 'compute-align-0.5', 'compute-align-0.9']
 		results = []
-		for NUM_CLUSTERS in [50, 100, 200]:
+		for NUM_CLUSTERS in [10, 20, 50, 100]:
 			for clustering_type in clustering_types:
 				papers_clusters, claims_clusters, cooc = compute_clusterings(clustering_type, 'PCA-GMM')
 				v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
