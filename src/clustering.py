@@ -11,6 +11,7 @@ from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.mixture import GaussianMixture
+from spacy.lang.en.stop_words import STOP_WORDS
 from torch import optim
 
 from gsdmm import MovieGroupProcess
@@ -21,9 +22,13 @@ sciclops_dir = str(Path.home()) + '/data/sciclops/'
 hn_vocabulary = set(map(str.lower, open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()))
 
 nlp = spacy.load('en_core_web_lg')
+for word in STOP_WORDS:
+    for w in (word, word[0].capitalize(), word.upper()):
+        lex = nlp.vocab[w]
+        lex.is_stop = True
+
 np.random.seed(42)
 torch.manual_seed(42)
-PRECISION_AT = 1
 
 # Hyper Parameters
 num_epochs = 50
@@ -315,6 +320,8 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	claims_clusters = claims_clusters.values
 
 	# P@k
+	PRECISION_AT = 1
+
 	top_papers = np.unique((-papers_clusters).argsort(axis=0)[:EVAL_THRESHOLD].flatten())
 
 	P = papers_clusters[top_papers]
@@ -377,39 +384,35 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	claims_clusters = claims_clusters.reset_index().drop(['url', 'popularity'], axis=1).rename(columns={0:'cluster'})
 
 	def compute_sts(text_1, text_2):
-		text_1 = pd.Series(list(set(text_1.split()).intersection(hn_vocabulary)))
-		text_2 = pd.Series(list(set(text_2.split()).intersection(hn_vocabulary)))
-		
-		if text_1.empty or text_2.empty:
-			sim = nlp(''.join(text_1)).similarity(nlp(''.join(text_2)))
-		elif len(set(text_1).intersection(set(text_2))) > 0:
-			sim = 1
-		else:
-			text_1 = np.vstack(text_1.apply(lambda t: nlp(t).vector))
-			text_2 = np.vstack(text_2.apply(lambda t: nlp(t).vector))
+		text_1 = set([token.text.lower() for token in nlp(text_1) if not (token.is_punct | token.is_space | token.is_stop)])
+		text_2 = set([token.text.lower() for token in nlp(text_2) if not (token.is_punct | token.is_space | token.is_stop)])
+
+		if len(text_1.intersection(text_2).intersection(hn_vocabulary)) > 0:
+			return 1
+		elif len(text_1.intersection(hn_vocabulary)) > 0 and len(text_2.intersection(hn_vocabulary)) > 0:
+			text_1 = np.vstack(pd.Series(list(text_1)).apply(lambda t: nlp(t).vector))
+			text_2 = np.vstack(pd.Series(list(text_2)).apply(lambda t: nlp(t).vector))
 			sim = cosine_similarity(text_1, text_2).max()
+		else:
+			sim = nlp(' '.join(text_1)).similarity(nlp(' '.join(text_2)))
 			
 		return sim
 
 	papers = papers_clusters.merge(claims_clusters_repr)
-	papers['sim'] = papers.apply(lambda p: compute_sts(p.claim, p.title), axis=1)
-	mean_pc = papers.groupby('cluster')['sim'].median().sort_values(ascending=False)[:int(0.7*NUM_CLUSTERS)].median()
+	mean_pc = papers.apply(lambda p: compute_sts(p.claim, p.title), axis=1).mean()
 
 	claims = claims_clusters.merge(papers_clusters_repr)
-	claims['sim'] = claims.apply(lambda p: compute_sts(p.claim, p.title), axis=1)
-	mean_cp = claims.groupby('cluster')['sim'].median().sort_values(ascending=False)[:int(0.7*NUM_CLUSTERS)].median()
+	mean_cp = claims.apply(lambda p: compute_sts(p.claim, p.title), axis=1).mean()
 
-	# papers = papers_clusters.merge(papers_clusters_repr, on='cluster')
-	# mean_pp = papers.apply(lambda p: compute_sts(p.title_x, p.title_y), axis=1).median()
+	papers = papers_clusters.merge(papers_clusters_repr, on='cluster')
+	mean_pp = papers.apply(lambda p: compute_sts(p.title_x, p.title_y), axis=1).mean()
 
-	# claims = claims_clusters.merge(claims_clusters_repr, on='cluster')
-	# mean_cc = claims.apply(lambda p: compute_sts(p.claim_x, p.claim_y), axis=1).median()
+	claims = claims_clusters.merge(claims_clusters_repr, on='cluster')
+	mean_cc = claims.apply(lambda p: compute_sts(p.claim_x, p.claim_y), axis=1).mean()
 
-
-	asw = np.mean([mean_cp, mean_pc])
+	asw = np.mean([mean_pc, mean_cp, mean_pp, mean_cc])
 		
 	return p, asw
-
 	
 def compute_clusterings(clustering_type, init_clustering_method=None):
 
@@ -437,9 +440,6 @@ def compute_clusterings(clustering_type, init_clustering_method=None):
 			loss.backward()
 			optimizer.step()
 
-		# if epoch%1 == 0:
-		# 	print(sum(mean_loss)/len(mean_loss))
-
 	papers_clusters, claims_clusters, cooc = model.final_clusters()
 	return papers_clusters, claims_clusters, cooc
 
@@ -453,8 +453,8 @@ if __name__ == "__main__":
 				papers_clusters, claims_clusters, cooc = compute_clusterings(clustering_type, 'PCA-GMM')
 				p, asw = eval_clusters(papers_clusters, claims_clusters, cooc)
 				results += [[NUM_CLUSTERS, clustering_type, p, asw]]
+				print(results)
 		
-		print(results)
 		pd.DataFrame(results, columns=['clusters', 'method', 'p', 'asw']).to_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t', index=None)
 
 	else:
