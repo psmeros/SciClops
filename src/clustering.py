@@ -1,17 +1,17 @@
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import spacy
 import torch
 import torch.nn as nn
+from sklearn.cluster import KMeans
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.mixture import GaussianMixture
-from sklearn.cluster import KMeans
-from sklearn.metrics.cluster import v_measure_score
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.mixture import GaussianMixture
 from torch import optim
-import spacy
 
 from gsdmm import MovieGroupProcess
 
@@ -23,16 +23,15 @@ hn_vocabulary = set(map(str.lower, open(sciclops_dir + 'small_files/hn_vocabular
 nlp = spacy.load('en_core_web_lg')
 np.random.seed(42)
 torch.manual_seed(42)
-#NUM_CLUSTERS = 20
-#EVAL_THRESHOLD = 100
+PRECISION_AT = 1
 
 # Hyper Parameters
 num_epochs = 50
 learning_rate = 1.e-3
 hidden = 50
 batch_size = 128
-beta = 0.1
-gamma = 0
+beta = 1.e-3
+gamma = 1.e-3
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -307,7 +306,7 @@ class ClusterNet(nn.Module):
 ############################### ######### ###############################
 
 def eval_clusters(papers_clusters, claims_clusters, cooc):
-	#papers_clusters, claims_clusters, cooc = compute_clusterings('compute-align', 'PCA-GMM')
+	#papers_clusters, claims_clusters, cooc = compute_clusterings('compute-align-0.5', 'PCA-GMM')
 	EVAL_THRESHOLD = 10*NUM_CLUSTERS
 	
 	papers_index = papers_clusters.index
@@ -315,7 +314,7 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	papers_clusters = papers_clusters.values
 	claims_clusters = claims_clusters.values
 
-	# V-Measure
+	# P@k
 	top_papers = np.unique((-papers_clusters).argsort(axis=0)[:EVAL_THRESHOLD].flatten())
 
 	P = papers_clusters[top_papers]
@@ -323,11 +322,22 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	mask = (~np.all(L == 0, axis=1))
 	L = L[mask]
 	C = claims_clusters[mask]
-	
-	labels_inherited = np.multiply(L, np.argmax(P, axis=1)).max(axis=1)
-	labels_expected = np.argmax(C, axis=1)
 
-	v1 = v_measure_score(labels_expected, labels_inherited)
+	P_at_k = np.apply_along_axis(lambda x : {i:x[i] for i in np.argsort(x)[-PRECISION_AT:]}, 1, P)
+
+	labels_inherited = []
+	for Li in L:
+		z = Counter()
+		for d in P_at_k[np.nonzero(Li)[0]]:
+			z.update(Counter(d))
+		labels_inherited += [sorted(z, key=z.get, reverse=True)[:PRECISION_AT]]
+
+	labels_inherited = np.array(labels_inherited)
+	labels_expected = np.argsort(C, axis=1)[:, -PRECISION_AT:]
+
+	p1 = [len(np.setdiff1d(li, le, assume_unique=True))>0 for li, le in zip(labels_inherited, labels_expected)]
+	p1 = sum(p1)/len(p1)
+
 
 	top_claims = np.unique((-claims_clusters).argsort(axis=0)[:EVAL_THRESHOLD].flatten())
 
@@ -336,14 +346,26 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	mask = (~np.all(L == 0, axis=0))
 	L = L[:, mask]
 	P = papers_clusters[mask]
-	
-	labels_inherited = np.multiply(L.T, np.argmax(C, axis=1)).max(axis=1)
-	labels_expected = np.argmax(P, axis=1)
 
-	v2 = v_measure_score(labels_expected, labels_inherited)
-	v = np.mean([v1, v2])
+	C_at_k = np.apply_along_axis(lambda x : {i:x[i] for i in np.argsort(x)[-PRECISION_AT:]}, 1, C)
 
-	#STS
+	labels_inherited = []
+	for Li in L.T:
+		z = Counter()
+		for d in C_at_k[np.nonzero(Li)[0]]:
+			z.update(Counter(d))
+		labels_inherited += [sorted(z, key=z.get, reverse=True)[:PRECISION_AT]]
+
+	labels_inherited = np.array(labels_inherited)
+	labels_expected = np.argsort(P, axis=1)[:, -PRECISION_AT:]
+
+	p2 = [len(np.setdiff1d(li, le, assume_unique=True))>0 for li, le in zip(labels_inherited, labels_expected)]
+	p2 = sum(p2)/len(p2)
+
+
+	p = np.mean([p1, p2])
+
+	#Average Silhouette Width
 	papers_clusters = pd.DataFrame(papers_clusters[top_papers], index=papers_index[top_papers])
 	papers_clusters_repr = papers_clusters.reset_index(['url', 'popularity'], drop=True).idxmax().reset_index().rename(columns={'index':'cluster', 0:'title'})
 	papers_clusters = papers_clusters.idxmax(axis=1)
@@ -384,9 +406,9 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	# mean_cc = claims.apply(lambda p: compute_sts(p.claim_x, p.claim_y), axis=1).median()
 
 
-	sts = np.mean([mean_cp, mean_pc])
+	asw = np.mean([mean_cp, mean_pc])
 		
-	return v, sts
+	return p, asw
 
 	
 def compute_clusterings(clustering_type, init_clustering_method=None):
@@ -429,10 +451,11 @@ if __name__ == "__main__":
 		for NUM_CLUSTERS in [10, 20, 50, 100]:
 			for clustering_type in clustering_types:
 				papers_clusters, claims_clusters, cooc = compute_clusterings(clustering_type, 'PCA-GMM')
-				v, sts = eval_clusters(papers_clusters, claims_clusters, cooc)
-				results += [[NUM_CLUSTERS, clustering_type, v, sts]]
+				p, asw = eval_clusters(papers_clusters, claims_clusters, cooc)
+				results += [[NUM_CLUSTERS, clustering_type, p, asw]]
 		
-		pd.DataFrame(results, columns=['clusters', 'method', 'v', 'sts']).to_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t', index=None)
+		print(results)
+		pd.DataFrame(results, columns=['clusters', 'method', 'p', 'asw']).to_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t', index=None)
 
 	else:
 		papers_clusters, claims_clusters, _ = compute_clusterings('compute-align', 'PCA-GMM')
