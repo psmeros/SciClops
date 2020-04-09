@@ -311,8 +311,8 @@ class ClusterNet(nn.Module):
 ############################### ######### ###############################
 
 def eval_clusters(papers_clusters, claims_clusters, cooc):
-	#papers_clusters, claims_clusters, cooc = compute_clusterings('compute-align-0.5', 'PCA-GMM')
-	EVAL_THRESHOLD = 10*NUM_CLUSTERS
+	# papers_clusters, claims_clusters, cooc = compute_clusterings('GMM', 'PCA-GMM')
+	EVAL_THRESHOLD = int(100/NUM_CLUSTERS)
 	
 	papers_index = papers_clusters.index
 	claims_index = claims_clusters.index
@@ -383,32 +383,25 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	claims_clusters = claims_clusters.idxmax(axis=1)
 	claims_clusters = claims_clusters.reset_index().drop(['url', 'popularity'], axis=1).rename(columns={0:'cluster'})
 
-	def compute_sts(text_1, text_2):
-		text_1 = set([token.text.lower() for token in nlp(text_1) if not (token.is_punct | token.is_space | token.is_stop)])
-		text_2 = set([token.text.lower() for token in nlp(text_2) if not (token.is_punct | token.is_space | token.is_stop)])
+	def clean_text(text):
+		return nlp(' '.join([token.text.lower() for token in nlp(text) if not (token.is_punct | token.is_space | token.is_stop)]))
 
-		if len(text_1.intersection(text_2).intersection(hn_vocabulary)) > 0:
-			return 1
-		elif len(text_1.intersection(hn_vocabulary)) > 0 and len(text_2.intersection(hn_vocabulary)) > 0:
-			text_1 = np.vstack(pd.Series(list(text_1)).apply(lambda t: nlp(t).vector))
-			text_2 = np.vstack(pd.Series(list(text_2)).apply(lambda t: nlp(t).vector))
-			sim = cosine_similarity(text_1, text_2).max()
-		else:
-			sim = nlp(' '.join(text_1)).similarity(nlp(' '.join(text_2)))
-			
-		return sim
+	papers_clusters['title_clean'] = papers_clusters['title'].apply(clean_text)
+	papers_clusters_repr['title_clean'] = papers_clusters_repr['title'].apply(clean_text)
+	claims_clusters['claim_clean'] = claims_clusters['claim'].apply(clean_text)
+	claims_clusters_repr['claim_clean'] = claims_clusters_repr['claim'].apply(clean_text)
 
 	papers = papers_clusters.merge(claims_clusters_repr)
-	mean_pc = papers.apply(lambda p: compute_sts(p.claim, p.title), axis=1).mean()
+	mean_pc = papers.apply(lambda p: p['claim_clean'].similarity(p['title_clean']), axis=1).mean()
 
 	claims = claims_clusters.merge(papers_clusters_repr)
-	mean_cp = claims.apply(lambda p: compute_sts(p.claim, p.title), axis=1).mean()
+	mean_cp = claims.apply(lambda p: p['claim_clean'].similarity(p['title_clean']), axis=1).mean()
 
 	papers = papers_clusters.merge(papers_clusters_repr, on='cluster')
-	mean_pp = papers.apply(lambda p: compute_sts(p.title_x, p.title_y), axis=1).mean()
+	mean_pp = papers.apply(lambda p: p['title_clean_x'].similarity(p['title_clean_y']), axis=1).mean()
 
 	claims = claims_clusters.merge(claims_clusters_repr, on='cluster')
-	mean_cc = claims.apply(lambda p: compute_sts(p.claim_x, p.claim_y), axis=1).mean()
+	mean_cc = claims.apply(lambda p: p['claim_clean_x'].similarity(p['claim_clean_y']), axis=1).mean()
 
 	asw = np.mean([mean_pc, mean_cp, mean_pp, mean_cc])
 		
