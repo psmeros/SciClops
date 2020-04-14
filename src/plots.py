@@ -29,11 +29,11 @@ def analyze_url(url):
 ############################### ######### ###############################
 
 
-df = pd.read_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t') 
-mapping = {'LDA':'LDA', 'GSDMM':'GSDMM', 'GMM':'GMM', 'PCA-GMM':'PCA-GMM', 'KMeans':'K-Means', 'PCA-KMeans':'PCA-K-Means', 'compute_C_transform_P':'1FRT-P', 'compute_C_align_P':'1FRI-P', 'compute_P_transform_C':'1FRT-C', 'compute_P_align_C':'1FRI-C', 'coordinate-align':'2FRI', 'coordinate-transform':'2FRT', 'compute-align-0.1':'AO-beta-0.1', 'compute-align-0.5':'AO-beta-0.5', 'compute-align-0.9':'AO-beta-0.9'}
+df = pd.read_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t')
+mapping = {'LDA':'LDA', 'GSDMM':'GSDMM', 'GMM':'GMM', 'PCA-GMM':'PCA/GMM', 'KMeans':'K-Means', 'PCA-KMeans':'PCA/K-Means', 'coordinate-align':'GBA-CP', 'compute_P_align_C':'GBA-C', 'compute_C_align_P':'GBA-P', 'coordinate-transform':'GBT-CP', 'compute_P_transform_C':'GBT-C', 'compute_C_transform_P':'GBT-P', 'compute-align-0.1':'AO-Content', 'compute-align-0.5':'AO-Balanced', 'compute-align-0.9':'AO-Graph'}
 df.method = df.method.apply(lambda x: mapping[x])
 
-df = df.pivot(index='method', columns='clusters', values=['v', 'sts']).reindex(mapping.values()).swaplevel(axis=1).sort_index(axis=1, level=0).applymap(lambda x:'{0:04.1f}%'.format(100 * x))#.round(decimals=3) * 100
+df = df.pivot(index='method', columns='clusters', values=['ASW', 'ACC']).reindex(mapping.values()).swaplevel(axis=1).sort_index(axis=1, level=0, sort_remaining=False).applymap(lambda x:'{0:04.1f}%'.format(100 * x))#.round(decimals=3) * 100
 print(df.to_latex())
 
   # # Make the PairGrid
