@@ -3,17 +3,14 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import pandas as pd
+import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 
 ############################### CONSTANTS ###############################
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
-
-CLUSTER = {'num':2, 'label':'stress'}
-CLUSTER = {'num':5, 'label':'abortion'}
-#CLUSTER = {'num':15, 'label':'tobacco'}
-TOP_K = 10
+hn_vocabulary = set(map(str.lower, open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()))
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -28,41 +25,48 @@ def analyze_url(url):
 	return domain
 ############################### ######### ###############################
 
+def popular_clusters():
+  NUM_CLUSTERS = 100 
+  claims_clusters = pd.read_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
+  papers_clusters = pd.read_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t')
+  
+  claims_popularity = claims_clusters['popularity']
+  papers_popularity = papers_clusters['popularity']
+  
+  claims_rank = [sum(claims_clusters[str(i)]*claims_popularity) for i in range(NUM_CLUSTERS)]
+  claims_rank = [r/sum(claims_rank) for r in claims_rank]
+  papers_rank = [sum(papers_clusters[str(i)]*papers_popularity) for i in range(NUM_CLUSTERS)]
+  papers_rank = [r/sum(papers_rank) for r in papers_rank]
 
-df = pd.read_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t')
-mapping = {'LDA':'LDA', 'GSDMM':'GSDMM', 'GMM':'GMM', 'PCA-GMM':'PCA/GMM', 'KMeans':'K-Means', 'PCA-KMeans':'PCA/K-Means', 'coordinate-align':'GBA-CP', 'compute_P_align_C':'GBA-C', 'compute_C_align_P':'GBA-P', 'coordinate-transform':'GBT-CP', 'compute_P_transform_C':'GBT-C', 'compute_C_transform_P':'GBT-P', 'compute-align-0.1':'AO-Content', 'compute-align-0.5':'AO-Balanced', 'compute-align-0.9':'AO-Graph'}
-df.method = df.method.apply(lambda x: mapping[x])
+  rank = np.flip(np.argsort(np.array(claims_rank) + np.array(papers_rank)))
 
-df = df.pivot(index='method', columns='clusters', values=['ASW', 'ACC']).reindex(mapping.values()).swaplevel(axis=1).sort_index(axis=1, level=0, sort_remaining=False).applymap(lambda x:'{0:04.1f}%'.format(100 * x))#.round(decimals=3) * 100
-print(df.to_latex())
+  for c in range(NUM_CLUSTERS):
+    print('cluster: ', c)
+    claims_centroid = claims_clusters.iloc[claims_clusters[str(c)].argmax()]['claim'].lower()
+    print(claims_centroid)
+    claims_centroid = set(claims_centroid.split()).intersection(hn_vocabulary)
+    
+    papers_centroid = papers_clusters.iloc[papers_clusters[str(c)].argmax()]['title'].lower()
+    print(papers_centroid)
+    papers_centroid = set(papers_centroid.split()).intersection(hn_vocabulary)
 
-  # # Make the PairGrid
-  # g = sns.PairGrid(data, x_vars=['v', 'sts'], y_vars=['method'], height=5, aspect=.25)
+    print(claims_centroid.union(papers_centroid))
 
-  # # Draw a dot plot using the stripplot function
-  # g.map(sns.stripplot, size=10, orient="h", linewidth=1, edgecolor="w")
+def clustering_table():
+  df = pd.read_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t')
+  mapping = {'LDA':'LDA', 'GSDMM':'GSDMM', 'GMM':'GMM', 'PCA-GMM':'PCA/GMM', 'KMeans':'K-Means', 'PCA-KMeans':'PCA/K-Means', 'coordinate-align':'GBA-CP', 'compute_P_align_C':'GBA-C', 'compute_C_align_P':'GBA-P', 'coordinate-transform':'GBT-CP', 'compute_P_transform_C':'GBT-C', 'compute_C_transform_P':'GBT-P', 'compute-align-0.1':'AO-Content', 'compute-align-0.5':'AO-Balanced', 'compute-align-0.9':'AO-Graph'}
+  df.method = df.method.apply(lambda x: mapping[x])
 
-  # # Use the same x axis limits on all columns and add better labels
-  # g.set(xlim=(-0.2, 1.2), xlabel="Crashes", ylabel="")
-
-  # # Use semantically meaningful titles for the columns
-  # titles = ['v', 'sts']
-
-  # for ax, title in zip(g.axes.flat, titles):
-
-  #     # Set a different title for each axes
-  #     ax.set(title=title)
-
-  #     # Make the grid horizontal instead of vertical
-  #     ax.xaxis.grid(False)
-  #     ax.yaxis.grid(True)
-
-  # sns.despine(left=True, bottom=True)
-  # #ax = sns.scatterplot(x='v', y='sts', hue='method', data=data)
-
+  df = df.pivot(index='method', columns='clusters', values=['ASW', 'ACC']).reindex(mapping.values()).swaplevel(axis=1).sort_index(axis=1, level=0, sort_remaining=False).applymap(lambda x:'{0:04.1f}%'.format(100 * x))#.round(decimals=3) * 100
+  print(df.to_latex())
 
 
 def sankey_plot():
+  CLUSTER = {'num':2, 'label':'stress'}
+  #CLUSTER = {'num':5, 'label':'abortion'}
+  #CLUSTER = {'num':15, 'label':'tobacco'}
+  TOP_K = 10
+
   claims_clusters = pd.read_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
   papers_clusters = pd.read_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t')
 

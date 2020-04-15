@@ -311,7 +311,7 @@ class ClusterNet(nn.Module):
 ############################### ######### ###############################
 
 def eval_clusters(papers_clusters, claims_clusters, cooc):
-	# papers_clusters, claims_clusters, cooc = compute_clusterings('GMM', 'PCA-GMM')
+	#papers_clusters, claims_clusters, cooc = compute_clusterings('compute-align-0.5', 'PCA-GMM')
 	EVAL_THRESHOLD = int(100/NUM_CLUSTERS)
 	
 	papers_index = papers_clusters.index
@@ -391,17 +391,26 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	claims_clusters['claim_clean'] = claims_clusters['claim'].apply(clean_text)
 	claims_clusters_repr['claim_clean'] = claims_clusters_repr['claim'].apply(clean_text)
 
+	def sts(text_1, text_2):
+		semantic = text_1.similarity(text_2)
+		
+		text_1 = set(text_1.text.split()).intersection(hn_vocabulary)
+		text_2 = set(text_2.text.split()).intersection(hn_vocabulary)
+		jaccard = len(text_1.intersection(text_2)) / (len(text_1.union(text_2)) or 1)
+
+		return np.mean([semantic,jaccard])
+
 	papers = papers_clusters.merge(claims_clusters_repr)
-	mean_pc = papers.apply(lambda p: p['claim_clean'].similarity(p['title_clean']), axis=1).mean()
+	mean_pc = papers.apply(lambda p: sts(p['claim_clean'], p['title_clean']), axis=1).mean()
 
 	claims = claims_clusters.merge(papers_clusters_repr)
-	mean_cp = claims.apply(lambda p: p['claim_clean'].similarity(p['title_clean']), axis=1).mean()
+	mean_cp = claims.apply(lambda p: sts(p['claim_clean'], p['title_clean']), axis=1).mean()
 
 	papers = papers_clusters.merge(papers_clusters_repr, on='cluster')
-	mean_pp = papers.apply(lambda p: p['title_clean_x'].similarity(p['title_clean_y']), axis=1).mean()
+	mean_pp = papers.apply(lambda p: sts(p['title_clean_x'], p['title_clean_y']), axis=1).mean()
 
 	claims = claims_clusters.merge(claims_clusters_repr, on='cluster')
-	mean_cc = claims.apply(lambda p: p['claim_clean_x'].similarity(p['claim_clean_y']), axis=1).mean()
+	mean_cc = claims.apply(lambda p: sts(p['claim_clean_x'], p['claim_clean_y']), axis=1).mean()
 
 	asw = np.mean([mean_pc, mean_cp, mean_pp, mean_cc])
 		
@@ -437,20 +446,21 @@ def compute_clusterings(clustering_type, init_clustering_method=None):
 	return papers_clusters, claims_clusters, cooc
 
 if __name__ == "__main__":
-	compare = True
+	compare = False
 	if compare:
 		clustering_types = ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans', 'compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C', 'coordinate-align', 'coordinate-transform', 'compute-align-0.1', 'compute-align-0.5', 'compute-align-0.9']
 		results = []
 		for NUM_CLUSTERS in [10, 20, 50, 100]:
 			for clustering_type in clustering_types:
-				papers_clusters, claims_clusters, cooc = compute_clusterings(clustering_type, 'PCA-GMM')
+				papers_clusters, claims_clusters, cooc = compute_clusterings(clustering_type, 'GMM')
 				p, asw = eval_clusters(papers_clusters, claims_clusters, cooc)
 				results += [[NUM_CLUSTERS, clustering_type, p, asw]]
-				print(results)
+			print(results)
 		
-		pd.DataFrame(results, columns=['clusters', 'method', 'p', 'asw']).to_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t', index=None)
+		pd.DataFrame(results, columns=['clusters', 'method', 'ACC', 'ASW']).to_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t', index=None)
 
 	else:
-		papers_clusters, claims_clusters, _ = compute_clusterings('compute-align', 'PCA-GMM')
+		NUM_CLUSTERS = 100
+		papers_clusters, claims_clusters, _ = compute_clusterings('compute-align-0.1', 'GMM')
 		papers_clusters.to_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t')
 		claims_clusters.to_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
