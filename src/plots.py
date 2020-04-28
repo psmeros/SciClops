@@ -57,7 +57,7 @@ def clustering_table():
   mapping = {'LDA':'LDA', 'GSDMM':'GSDMM', 'GMM':'GMM', 'PCA-GMM':'PCA/GMM', 'KMeans':'K-Means', 'PCA-KMeans':'PCA/K-Means', 'coordinate-align':'GBA-CP', 'compute_P_align_C':'GBA-C', 'compute_C_align_P':'GBA-P', 'coordinate-transform':'GBT-CP', 'compute_P_transform_C':'GBT-C', 'compute_C_transform_P':'GBT-P', 'compute-align-0.1':'AO-Content', 'compute-align-0.5':'AO-Balanced', 'compute-align-0.9':'AO-Graph'}
   df.method = df.method.apply(lambda x: mapping[x])
 
-  df = df.pivot(index='method', columns='clusters', values=['ASW', 'ACC']).reindex(mapping.values()).swaplevel(axis=1).sort_index(axis=1, level=0, sort_remaining=False).applymap(lambda x:'{0:04.1f}%'.format(100 * x))#.round(decimals=3) * 100
+  df = df.pivot(index='method', columns='clusters', values=['ASW', 'P@3']).reindex(mapping.values()).swaplevel(axis=1).sort_index(axis=1, level=0, sort_remaining=False).applymap(lambda x:'{0:04.1f}%'.format(100 * x))#.round(decimals=3) * 100
   print(df.to_latex())
 
 

@@ -9,7 +9,6 @@ import torch.nn as nn
 from sklearn.cluster import KMeans
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.mixture import GaussianMixture
 from spacy.lang.en.stop_words import STOP_WORDS
 from torch import optim
@@ -310,9 +309,40 @@ class ClusterNet(nn.Module):
 
 ############################### ######### ###############################
 
+def compute_clusterings(clustering_type, init_clustering_method=None):
+
+	if clustering_type in ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans']:
+		_, _, papers_clusters, claims_clusters, cooc = standalone_clustering(clustering_type)
+		return papers_clusters, claims_clusters, cooc
+	elif clustering_type.startswith('compute-align'):
+		global gamma 
+		gamma = float(clustering_type.split('-')[2])
+		clustering_type = 'compute-align'
+	
+	model = ClusterNet(clustering_type, init_clustering_method)
+
+	optimizer = optim.Adam(model.parameters(), lr=learning_rate) 
+
+	for epoch in range(num_epochs):
+		permutation = model.compute_permutation(epoch)
+
+		mean_loss = []
+		for batch in range(0, len(permutation), batch_size):
+			optimizer.zero_grad()
+			P, L, C = model.forward(batch)
+			loss = model.loss(P, L, C)
+			mean_loss.append(loss.detach().numpy())
+			loss.backward()
+			optimizer.step()
+
+	papers_clusters, claims_clusters, cooc = model.final_clusters()
+	return papers_clusters, claims_clusters, cooc
+
+
 def eval_clusters(papers_clusters, claims_clusters, cooc):
-	#papers_clusters, claims_clusters, cooc = compute_clusterings('compute-align-0.5', 'PCA-GMM')
-	EVAL_THRESHOLD = int(100/NUM_CLUSTERS)
+	#papers_clusters, claims_clusters, cooc = compute_clusterings('LDA', 'PCA-GMM')
+	#threshold for faster computation; it has to be 100% for full comparison
+	EVAL_THRESHOLD = 1.0
 	
 	papers_index = papers_clusters.index
 	claims_index = claims_clusters.index
@@ -320,9 +350,9 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	claims_clusters = claims_clusters.values
 
 	# P@k
-	PRECISION_AT = 1
+	k = 3
 
-	top_papers = np.unique((-papers_clusters).argsort(axis=0)[:EVAL_THRESHOLD].flatten())
+	top_papers = np.unique((-papers_clusters).argsort(axis=0)[:int(EVAL_THRESHOLD*len(papers_clusters))].flatten())
 
 	P = papers_clusters[top_papers]
 	L = cooc[:, top_papers]
@@ -330,23 +360,23 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	L = L[mask]
 	C = claims_clusters[mask]
 
-	P_at_k = np.apply_along_axis(lambda x : {i:x[i] for i in np.argsort(x)[-PRECISION_AT:]}, 1, P)
+	P_at_k = np.apply_along_axis(lambda x : {i:x[i] for i in np.argsort(x)[-k:]}, 1, P)
 
 	labels_inherited = []
 	for Li in L:
 		z = Counter()
 		for d in P_at_k[np.nonzero(Li)[0]]:
 			z.update(Counter(d))
-		labels_inherited += [sorted(z, key=z.get, reverse=True)[:PRECISION_AT]]
+		labels_inherited += [sorted(z, key=z.get, reverse=True)[:k]]
 
 	labels_inherited = np.array(labels_inherited)
-	labels_expected = np.argsort(C, axis=1)[:, -PRECISION_AT:]
+	labels_expected = np.argsort(C, axis=1)[:, -k:]
 
-	p1 = [len(np.setdiff1d(li, le, assume_unique=True))>0 for li, le in zip(labels_inherited, labels_expected)]
+	p1 = [len(np.setdiff1d(li, le, assume_unique=True))<k for li, le in zip(labels_inherited, labels_expected)]
 	p1 = sum(p1)/len(p1)
 
 
-	top_claims = np.unique((-claims_clusters).argsort(axis=0)[:EVAL_THRESHOLD].flatten())
+	top_claims = np.unique((-claims_clusters).argsort(axis=0)[:int(EVAL_THRESHOLD*len(claims_clusters))].flatten())
 
 	C = claims_clusters[top_claims]
 	L = cooc[top_claims]
@@ -354,23 +384,23 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	L = L[:, mask]
 	P = papers_clusters[mask]
 
-	C_at_k = np.apply_along_axis(lambda x : {i:x[i] for i in np.argsort(x)[-PRECISION_AT:]}, 1, C)
+	C_at_k = np.apply_along_axis(lambda x : {i:x[i] for i in np.argsort(x)[-k:]}, 1, C)
 
 	labels_inherited = []
 	for Li in L.T:
 		z = Counter()
 		for d in C_at_k[np.nonzero(Li)[0]]:
 			z.update(Counter(d))
-		labels_inherited += [sorted(z, key=z.get, reverse=True)[:PRECISION_AT]]
+		labels_inherited += [sorted(z, key=z.get, reverse=True)[:k]]
 
 	labels_inherited = np.array(labels_inherited)
-	labels_expected = np.argsort(P, axis=1)[:, -PRECISION_AT:]
+	labels_expected = np.argsort(P, axis=1)[:, -k:]
 
-	p2 = [len(np.setdiff1d(li, le, assume_unique=True))>0 for li, le in zip(labels_inherited, labels_expected)]
+	p2 = [len(np.setdiff1d(li, le, assume_unique=True))<k for li, le in zip(labels_inherited, labels_expected)]
 	p2 = sum(p2)/len(p2)
 
-
 	p = np.mean([p1, p2])
+
 
 	#Average Silhouette Width
 	papers_clusters = pd.DataFrame(papers_clusters[top_papers], index=papers_index[top_papers])
@@ -416,37 +446,9 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 		
 	return p, asw
 	
-def compute_clusterings(clustering_type, init_clustering_method=None):
-
-	if clustering_type in ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans']:
-		_, _, papers_clusters, claims_clusters, cooc = standalone_clustering(clustering_type)
-		return papers_clusters, claims_clusters, cooc
-	elif clustering_type.startswith('compute-align'):
-		global gamma 
-		gamma = float(clustering_type.split('-')[2])
-		clustering_type = 'compute-align'
-	
-	model = ClusterNet(clustering_type, init_clustering_method)
-
-	optimizer = optim.Adam(model.parameters(), lr=learning_rate) 
-
-	for epoch in range(num_epochs):
-		permutation = model.compute_permutation(epoch)
-
-		mean_loss = []
-		for batch in range(0, len(permutation), batch_size):
-			optimizer.zero_grad()
-			P, L, C = model.forward(batch)
-			loss = model.loss(P, L, C)
-			mean_loss.append(loss.detach().numpy())
-			loss.backward()
-			optimizer.step()
-
-	papers_clusters, claims_clusters, cooc = model.final_clusters()
-	return papers_clusters, claims_clusters, cooc
 
 if __name__ == "__main__":
-	compare = False
+	compare = True
 	if compare:
 		clustering_types = ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans', 'compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C', 'coordinate-align', 'coordinate-transform', 'compute-align-0.1', 'compute-align-0.5', 'compute-align-0.9']
 		results = []
@@ -457,7 +459,7 @@ if __name__ == "__main__":
 				results += [[NUM_CLUSTERS, clustering_type, p, asw]]
 			print(results)
 		
-		pd.DataFrame(results, columns=['clusters', 'method', 'ACC', 'ASW']).to_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t', index=None)
+		pd.DataFrame(results, columns=['clusters', 'method', 'P@3', 'ASW']).to_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t', index=None)
 
 	else:
 		NUM_CLUSTERS = 100
