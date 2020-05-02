@@ -448,7 +448,7 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	
 
 if __name__ == "__main__":
-	compare = True
+	compare = False
 	if compare:
 		clustering_types = ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans', 'compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C', 'coordinate-align', 'coordinate-transform', 'compute-align-0.1', 'compute-align-0.5', 'compute-align-0.9']
 		results = []
@@ -463,6 +463,6 @@ if __name__ == "__main__":
 
 	else:
 		NUM_CLUSTERS = 100
-		papers_clusters, claims_clusters, _ = compute_clusterings('compute-align-0.1', 'GMM')
+		papers_clusters, claims_clusters, _ = compute_clusterings('compute-align-0.5', 'GMM')
 		papers_clusters.to_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t')
 		claims_clusters.to_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')

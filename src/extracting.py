@@ -96,22 +96,29 @@ def eval_BERT(model, gold_agreement):
 	f1 = 2*p*r/(p+r)
 	print (p,r,f1)
 
-def pred_BERT(model):
+def pred_BERT(model, claimKG=False):
 	model = ClassificationModel('bert', model, use_cuda=False)
 
-	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
-	titles = articles[['url', 'title']].drop_duplicates(subset='url').rename(columns={'title': 'claim'})
-	articles = articles[['url', 'quotes']].drop_duplicates(subset='url')
-	articles.quotes = articles.quotes.apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
-	articles = articles.explode('quotes').rename(columns={'quotes': 'claim'})
-	articles = pd.concat([articles, titles])
-	articles = articles[~articles['claim'].isna()]
+	if claimKG:
+		claimsKG = pd.read_csv(sciclops_dir+'small_files/claimKG/claims.csv') 
+		claimsKG['label'], _ = model.predict(claimsKG.claimText)
+		claimsKG = claimsKG[claimsKG.label == 1].drop('label', axis=1)
+		claimsKG.to_csv(sciclops_dir+'small_files/claimKG/claims_clean.csv', index=False)
 
-	articles['label'], _ = model.predict(articles.claim)
+	else:
+		articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
+		titles = articles[['url', 'title']].drop_duplicates(subset='url').rename(columns={'title': 'claim'})
+		articles = articles[['url', 'quotes']].drop_duplicates(subset='url')
+		articles.quotes = articles.quotes.apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
+		articles = articles.explode('quotes').rename(columns={'quotes': 'claim'})
+		articles = pd.concat([articles, titles])
+		articles = articles[~articles['claim'].isna()]
 
-	articles = articles[articles.label == 1].drop('label', axis=1)
-	articles = articles.groupby('url')['claim'].apply(list).reset_index()
-	articles.to_csv(sciclops_dir+'cache/claims_raw.tsv.bz2', sep='\t', index=False)
+		articles['label'], _ = model.predict(articles.claim)
+
+		articles = articles[articles.label == 1].drop('label', axis=1)
+		articles = articles.groupby('url')['claim'].apply(list).reset_index()
+		articles.to_csv(sciclops_dir+'cache/claims_raw.tsv.bz2', sep='\t', index=False)
 
 def rule_based(gold_agreement):
 	nlp = spacy.load('en_core_web_lg')
@@ -147,4 +154,4 @@ def rule_based(gold_agreement):
 if __name__ == "__main__":
 	#rule_based(gold_agreement='weak')
 	#eval_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier', gold_agreement='weak')
-	pred_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier')
+	pred_BERT(sciclops_dir + 'models/tuned-bert-classifier', claimKG=True)
