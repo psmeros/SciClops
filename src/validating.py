@@ -61,9 +61,11 @@ claims_clusters['weight'] = LAMBDA * claims_clusters['popularity'] + (1-LAMBDA) 
 for i in range(NUM_CLUSTERS):
 	claims = claims_clusters[claims_clusters['cluster'] == str(i)]
 	G = nx.Graph()
-	claims.apply(lambda c: (lambda s, w: [G.add_edge(e1, e2, weight=w) for e1 in s for e2 in s if e1 in health and e2 not in health])(set(c.claim.split()).intersection(hn_vocabulary), c.weight), axis=1)
+	claims.apply(lambda c: (lambda s, w: [G.add_edge(e1, e2, weight=G.get_edge_data(e1, e2, default={'weight': 0})['weight'] + w) for e1 in s for e2 in s if e1 in health and e2 not in health])(set(c.claim.split()).intersection(hn_vocabulary), c.weight), axis=1)
 	if not nx.is_empty(G):
 		(lambda d: print(max(d, key=d.get)))(nx.edge_betweenness_centrality(G, weight='weight'))
+
+
 
 
 h = 'cancer'
