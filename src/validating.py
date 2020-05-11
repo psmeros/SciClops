@@ -2,79 +2,94 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import numpy as np
+import networkx as nx
 import pandas as pd
 import spacy
-from spacy.lang.en.stop_words import STOP_WORDS
-import networkx as nx
 
 ############################### CONSTANTS ###############################
 
 sciclops_dir = str(Path.home()) + '/data/sciclops/' 
-hn_vocabulary = set(map(str.lower, open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()))
-health = set(map(str.lower, open(sciclops_dir + 'small_files/hn_vocabulary/health.txt').read().splitlines()))
+hn_vocabulary = set(map(str.lower, open(sciclops_dir + 'etc/hn_vocabulary/hn_vocabulary.txt').read().splitlines()))
+health = set(map(str.lower, open(sciclops_dir + 'etc/hn_vocabulary/health.txt').read().splitlines()))
 
-
-nlp = spacy.load('en_core_web_lg')
-for word in STOP_WORDS:
-    for w in (word, word[0].capitalize(), word.upper()):
-        lex = nlp.vocab[w]
-        lex.is_stop = True
-
-NUM_CLUSTERS = 100 
-LAMBDA = 0.6
+NUM_CLUSTERS = 10
+LAMBDA = 0.3
 ############################### ######### ###############################
 
-################################ HELPERS ################################
-
-def sts(text_1, text_2):
-	#semantic = text_1.similarity(text_2)
-	
-	#text_1 = set(text_1.text.split()).intersection(hn_vocabulary).update(set([e.text for e in nlp(text_1).ents]))
-	#text_2 = set(text_2.text.split()).intersection(hn_vocabulary).update(set([e.text for e in nlp(text_2).ents]))
-	jaccard = len(text_1.intersection(text_2)) / (len(text_1.union(text_2)) or 1)
-	return jaccard
-	#return np.mean([semantic,jaccard])
+def prepare_claims():
+	claimsKG = pd.read_csv(sciclops_dir+'etc/claimKG/claims.csv')
+	claims_clusters = pd.read_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
+	papers_clusters = pd.read_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t').merge(pd.read_csv(sciclops_dir + 'cache/paper_details_v1.tsv.bz2', sep='\t')[['url', 'full_text']], on='url')
 
 
-def clean_text(text):
-	return set([token.text.lower() for token in nlp(text) if not (token.is_punct | token.is_space | token.is_stop)])
+	claims_clusters['cluster'] = claims_clusters[[str(i) for i in range(NUM_CLUSTERS)]].idxmax(axis=1)
+	claims_clusters = claims_clusters[['url', 'claim', 'popularity', 'cluster']]
 
-############################### ######### ###############################
+	claims_clusters['domain'] = claims_clusters.url.apply(lambda u: re.sub(r'^(http(s)?://)?(www\.)?', r'', urlsplit(u).netloc))
+	claims_clusters = claims_clusters.merge(pd.read_csv(sciclops_dir + 'etc/news_outlets/acsh.tsv', sep='\t'), left_on='domain', right_on='outlet', how='left').drop(['domain', 'outlet'], axis=1).fillna(0.0)
 
-claimsKG = pd.read_csv(sciclops_dir+'small_files/claimKG/claims.csv')
-claims_clusters = pd.read_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
-papers_clusters = pd.read_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t').merge(pd.read_csv(sciclops_dir + 'cache/paper_details_v1.tsv.bz2', sep='\t')[['url', 'full_text']], on='url')
+	claims_clusters['rate'] = 1 - ((claims_clusters['rate'] - min(claims_clusters['rate'])) / (max(claims_clusters['rate']) - min(claims_clusters['rate'])))
+	claims_clusters['popularity'] = claims_clusters['popularity']/max(claims_clusters['popularity'])
+
+	claims_clusters['weight'] = LAMBDA * claims_clusters['popularity'] + (1-LAMBDA) * claims_clusters['rate']
+
+	pairs = []
+	max_pairs_per_cluster = 5
+	for i in range(NUM_CLUSTERS):
+		claims = claims_clusters[claims_clusters['cluster'] == str(i)]
+		G = nx.Graph()
+		claims.apply(lambda c: (lambda s, w: [G.add_edge(e1, e2, weight=G.get_edge_data(e1, e2, default={'weight': 0})['weight'] + w) for e1 in s for e2 in s if e1 in health and e2 not in health])(set(c.claim.split()).intersection(hn_vocabulary), c.weight), axis=1)
+		if not nx.is_empty(G):
+			pairs += (lambda d: list(dict(sorted(d.items(), key=lambda x:x[1], reverse = True)[:max_pairs_per_cluster]).keys()))(nx.edge_betweenness_centrality(G, weight='weight'))
+
+	claims_enhanced_context = []
+	for p in pairs:
+		claims = claims_clusters[claims_clusters.claim.str.contains(p[0]) & claims_clusters.claim.str.contains(p[1])][['claim', 'url']].values.tolist()
+		papers = papers_clusters[papers_clusters.full_text.str.contains(p[0]) & papers_clusters.full_text.str.contains(p[1])][['title', 'url']].values.tolist()
+		if not papers:
+			continue
+		kg = claimsKG[claimsKG.claimText.str.contains(p[0]) | claimsKG.claimText.str.contains(p[1])][['claimText', 'rating']].values.tolist()
+		
+		for c in claims:
+			claims_enhanced_context += [[p[0]+'-'+p[1], c[0], c[1], claims, papers, kg]]
+			claims_enhanced_context += [[p[1]+'-'+p[0], c[0], c[1], claims, papers, kg]]
+
+	claims_enhanced_context = pd.DataFrame(claims_enhanced_context)
+
+	claims_enhanced_context = claims_enhanced_context.drop_duplicates(subset=1)
+	claims_enhanced_context.to_csv(sciclops_dir + 'etc/evaluation/claims_enhanced_context_v1.csv', index=False)
 
 
-claims_clusters['cluster'] = claims_clusters[[str(i) for i in range(NUM_CLUSTERS)]].idxmax(axis=1)
-claims_clusters = claims_clusters[['url', 'claim', 'popularity', 'cluster']]
+def microtask_preparation():
+	max_related = 3
+	nlp = spacy.load('en_core_web_lg')
 
-claims_clusters['domain'] = claims_clusters.url.apply(lambda u: re.sub(r'^(http(s)?://)?(www\.)?', r'', urlsplit(u).netloc))
-claims_clusters = claims_clusters.merge(pd.read_csv(sciclops_dir + 'small_files/news_outlets/acsh.tsv', sep='\t'), left_on='domain', right_on='outlet', how='left').drop(['domain', 'outlet'], axis=1).fillna(0.0)
+	df = pd.read_csv(sciclops_dir + 'etc/evaluation/claims_enhanced_context_v1.csv')
 
-claims_clusters['rate'] = 1 - ((claims_clusters['rate'] - min(claims_clusters['rate'])) / (max(claims_clusters['rate']) - min(claims_clusters['rate'])))
-claims_clusters['popularity'] = claims_clusters['popularity']/max(claims_clusters['popularity'])
+	def find_most_similar(claim, related, pos):
+		related = eval(related)
+		if len(related) <= pos:
+			return ('', '')
+		d = {(r[0],r[1]):nlp(claim).similarity(nlp(r[0])) for r in related}
+		return sorted(d.items(), key=lambda x:x[1], reverse = True)[pos][0]
 
-claims_clusters['weight'] = LAMBDA * claims_clusters['popularity'] + (1-LAMBDA) * claims_clusters['rate']
+	df['topic'] = df['0']
+	df['main_claim'] = df['1']
+	df['main_claim_URL'] = df['2']
 
-for i in range(NUM_CLUSTERS):
-	claims = claims_clusters[claims_clusters['cluster'] == str(i)]
-	G = nx.Graph()
-	claims.apply(lambda c: (lambda s, w: [G.add_edge(e1, e2, weight=G.get_edge_data(e1, e2, default={'weight': 0})['weight'] + w) for e1 in s for e2 in s if e1 in health and e2 not in health])(set(c.claim.split()).intersection(hn_vocabulary), c.weight), axis=1)
-	if not nx.is_empty(G):
-		(lambda d: print(max(d, key=d.get)))(nx.edge_betweenness_centrality(G, weight='weight'))
+	for i in range(max_related):
+		df['related_claim_'+str(i+1)], df['related_claim_'+str(i+1)+'_URL'] = zip(*df.apply(lambda x: find_most_similar(x['1'], x['3'], i), axis=1))
+
+	for i in range(max_related):
+		df['related_paper_'+str(i+1)], df['related_paper_'+str(i+1)+'_URL'] = zip(*df.apply(lambda x: find_most_similar(x['1'], x['4'], i), axis=1))
+
+	for i in range(max_related):
+		df['related_factcheck_'+str(i+1)], df['related_factcheck_'+str(i+1)+'_LABEL'] = zip(*df.apply(lambda x: find_most_similar(x['1'], x['5'], i), axis=1))
 
 
+	df = df.drop([str(i) for i in range(6)], axis=1)
 
-
-h = 'cancer'
-s = 'marijuana'
-
-[print(c) for c in claims_clusters[claims_clusters.claim.str.contains(h) & claims_clusters.claim.str.contains(s)]['claim']]
-[print(p) for p in papers_clusters[papers_clusters.full_text.str.contains(h) & papers_clusters.full_text.str.contains(s)]['title']]
-[print(k) for k in claimsKG[claimsKG.claimText.str.contains(h) & claimsKG.claimText.str.contains(s)]['claimText']]
-
+	df.to_csv(sciclops_dir + 'etc/evaluation/claims_enhanced_context_v2.csv', index=False)
 
 #Query for https://data.gesis.org/claimskg/sparql
 

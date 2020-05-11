@@ -18,7 +18,7 @@ from gsdmm import MovieGroupProcess
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
-hn_vocabulary = set(map(str.lower, open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()))
+hn_vocabulary = set(map(str.lower, open(sciclops_dir + 'etc/hn_vocabulary/hn_vocabulary.txt').read().splitlines()))
 
 nlp = spacy.load('en_core_web_lg')
 for word in STOP_WORDS:
