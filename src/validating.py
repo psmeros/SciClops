@@ -2,9 +2,12 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
+import seaborn as sns
 import spacy
+from sklearn.metrics import cohen_kappa_score
 
 ############################### CONSTANTS ###############################
 
@@ -15,6 +18,51 @@ health = set(map(str.lower, open(sciclops_dir + 'etc/hn_vocabulary/health.txt').
 NUM_CLUSTERS = 10
 LAMBDA = 0.3
 ############################### ######### ###############################
+
+def KDEs():
+	df_enhanced = pd.read_csv(sciclops_dir+'etc/evaluation/enhanced_context.csv')
+	df_enhanced['claim'] = df_enhanced['Input.main_claim']
+	df_enhanced['confidence'] = 1 * df_enhanced['Answer.Confidence1.Confidence1'] + 2 * df_enhanced['Answer.Confidence2.Confidence2'] + 3 * df_enhanced['Answer.Confidence3.Confidence3'] + 4 * df_enhanced['Answer.Confidence4.Confidence4'] + 5 * df_enhanced['Answer.Confidence5.Confidence5']
+	df_enhanced['effort'] = 0 * df_enhanced['Answer.Effort0.Effort0'] + 1 * df_enhanced['Answer.Effort1.Effort1'] + 2 * df_enhanced['Answer.Effort2.Effort2'] + 3 * df_enhanced['Answer.Effort3.Effort3'] + 4 * df_enhanced['Answer.Effort4.Effort4'] + 5 * df_enhanced['Answer.Effort5.Effort5']
+	df_enhanced ['validity'] = 0 * df_enhanced['Answer.ValidityNA.ValidityNA'] + (-2) * df_enhanced['Answer.Validity-2.Validity-2'] + (-1) * df_enhanced['Answer.Validity-1.Validity-1'] + 0 * df_enhanced['Answer.Validity0.Validity0'] + 1 * df_enhanced['Answer.Validity+1.Validity+1'] + 2 * df_enhanced['Answer.Validity+2.Validity+2']
+	df_enhanced = df_enhanced[['claim', 'confidence', 'effort', 'validity']]
+
+	df_original = pd.read_csv(sciclops_dir+'etc/evaluation/original_context.csv')
+	df_original['claim'] = df_original['Input.main_claim']
+	df_original['confidence'] = 1 * df_original['Answer.Confidence1.Confidence1'] + 2 * df_original['Answer.Confidence2.Confidence2']+ 3 * df_original['Answer.Confidence3.Confidence3']
+	df_original['effort'] = 0 * df_original['Answer.Effort0.Effort0'] + 1 * df_original['Answer.Effort1.Effort1'] + 2 * df_original['Answer.Effort2.Effort2'] + 3 * df_original['Answer.Effort3.Effort3'] 
+	df_original ['validity'] = 0 * df_original['Answer.ValidityNA.ValidityNA'] + (-2) * df_original['Answer.Validity-2.Validity-2'] + (-1) * df_original['Answer.Validity-1.Validity-1'] + 0 * df_original['Answer.Validity0.Validity0'] + 1 * df_original['Answer.Validity+1.Validity+1'] + 2 * df_original['Answer.Validity+2.Validity+2']
+	df_original = df_original[['claim', 'confidence', 'effort', 'validity']]
+
+	df_no = pd.read_csv(sciclops_dir+'etc/evaluation/no_context.csv')
+	df_no['claim'] = df_no['Input.main_claim']
+	df_no['confidence'] = 1 * df_no['Answer.Confidence1.Confidence1'] + 2 * df_no['Answer.Confidence2.Confidence2']+ 3 * df_no['Answer.Confidence3.Confidence3']
+	df_no['effort'] = 0 * df_no['Answer.Effort0.Effort0'] + 1 * df_no['Answer.Effort1.Effort1'] + 2 * df_no['Answer.Effort2.Effort2'] + 3 * df_no['Answer.Effort3.Effort3'] 
+	df_no ['validity'] = 0 * df_no['Answer.ValidityNA.ValidityNA'] + (-2) * df_no['Answer.Validity-2.Validity-2'] + (-1) * df_no['Answer.Validity-1.Validity-1'] + 0 * df_no['Answer.Validity0.Validity0'] + 1 * df_no['Answer.Validity+1.Validity+1'] + 2 * df_no['Answer.Validity+2.Validity+2']
+	df_no = df_no[['claim', 'confidence', 'effort', 'validity']]
+
+	sns.set(context='paper', style='white', color_codes=True, font_scale=2.5)
+	sns.set_palette('colorblind')
+	fig, (ax0, ax1) = plt.subplots(nrows=1, ncols=2, figsize=(12,10))
+	for ind, ax in zip(['confidence', 'effort'], [ax0, ax1]):
+		for df, l, c in zip([df_enhanced, df_original, df_no], ['Enhanced', 'Original', 'No'], ['#D9514EFF', '#2A2B2DFF', '#2DA8D8FF']):
+			#df = df.sort_values(by='confidence')[:int(.3*len(df))]
+			ax = sns.kdeplot(df.groupby('claim').mean()[ind], label=l+' Context', color=c, shade= True, ax=ax)
+			ax.set(ylim=(0, .9))	
+			ax.set_xlabel(ind.capitalize(), fontsize='large')
+			ax.get_legend().remove()
+			ax.set_xticks([0,2,4])
+			ax.set_xticklabels(['Low', 'Medium', 'High'])
+
+	ax0.set_ylabel('Density', fontsize='large')	
+	ax1.get_yaxis().set_visible(False)
+
+	lines, labels = ax1.get_legend_handles_labels()    
+	fig.legend(lines, labels, loc = 'upper right', ncol=1, bbox_to_anchor=(.87, .87))
+
+	sns.despine(left=True, bottom=True)
+	plt.show()
+	fig.savefig(sciclops_dir+'etc/evaluation/KDEs.pdf', bbox_inches='tight')
 
 def prepare_claims():
 	claimsKG = pd.read_csv(sciclops_dir+'etc/claimKG/claims.csv')
@@ -59,7 +107,6 @@ def prepare_claims():
 	claims_enhanced_context = claims_enhanced_context.drop_duplicates(subset=1)
 	claims_enhanced_context.to_csv(sciclops_dir + 'etc/evaluation/claims_enhanced_context_v1.csv', index=False)
 
-
 def microtask_preparation():
 	max_related = 3
 	nlp = spacy.load('en_core_web_lg')
@@ -90,6 +137,7 @@ def microtask_preparation():
 	df = df.drop([str(i) for i in range(6)], axis=1)
 
 	df.to_csv(sciclops_dir + 'etc/evaluation/claims_enhanced_context_v2.csv', index=False)
+
 
 #Query for https://data.gesis.org/claimskg/sparql
 
