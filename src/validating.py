@@ -7,7 +7,7 @@ import networkx as nx
 import pandas as pd
 import seaborn as sns
 import spacy
-from sklearn.metrics import cohen_kappa_score
+from sklearn.metrics import mean_squared_error
 
 ############################### CONSTANTS ###############################
 
@@ -18,6 +18,49 @@ health = set(map(str.lower, open(sciclops_dir + 'etc/hn_vocabulary/health.txt').
 NUM_CLUSTERS = 10
 LAMBDA = 0.3
 ############################### ######### ###############################
+
+def RMSE():
+	df_enhanced = pd.read_csv(sciclops_dir+'etc/evaluation/enhanced_context.csv')
+	df_enhanced['claim'] = df_enhanced['Input.main_claim']
+	df_enhanced ['validity'] = 0 * df_enhanced['Answer.ValidityNA.ValidityNA'] + (-2) * df_enhanced['Answer.Validity-2.Validity-2'] + (-1) * df_enhanced['Answer.Validity-1.Validity-1'] + 0 * df_enhanced['Answer.Validity0.Validity0'] + 1 * df_enhanced['Answer.Validity+1.Validity+1'] + 2 * df_enhanced['Answer.Validity+2.Validity+2']
+	df_enhanced = df_enhanced[['claim', 'validity']]
+	df_enhanced = df_enhanced.groupby('claim').mean().reset_index()
+
+	df_original = pd.read_csv(sciclops_dir+'etc/evaluation/original_context.csv')
+	df_original['claim'] = df_original['Input.main_claim']
+	df_original ['validity'] = 0 * df_original['Answer.ValidityNA.ValidityNA'] + (-2) * df_original['Answer.Validity-2.Validity-2'] + (-1) * df_original['Answer.Validity-1.Validity-1'] + 0 * df_original['Answer.Validity0.Validity0'] + 1 * df_original['Answer.Validity+1.Validity+1'] + 2 * df_original['Answer.Validity+2.Validity+2']
+	df_original = df_original[['claim', 'validity']]
+	df_original = df_original.groupby('claim').mean().reset_index()
+
+	df_no = pd.read_csv(sciclops_dir+'etc/evaluation/no_context.csv')
+	df_no['claim'] = df_no['Input.main_claim']
+	df_no ['validity'] = 0 * df_no['Answer.ValidityNA.ValidityNA'] + (-2) * df_no['Answer.Validity-2.Validity-2'] + (-1) * df_no['Answer.Validity-1.Validity-1'] + 0 * df_no['Answer.Validity0.Validity0'] + 1 * df_no['Answer.Validity+1.Validity+1'] + 2 * df_no['Answer.Validity+2.Validity+2']
+	df_no = df_no[['claim', 'validity']]
+	df_no = df_no.groupby('claim').mean().reset_index()
+
+	df_sylvia = pd.read_csv(sciclops_dir+'etc/evaluation/sylvia.csv')
+	df_sylvia['claim'] = df_sylvia['Scientific Claim']
+	df_sylvia['validity'] = df_sylvia['Validity [-2,+2]']
+	df_sylvia = df_sylvia[['claim', 'validity']]
+
+	df_dimitra = pd.read_csv(sciclops_dir+'etc/evaluation/dimitra.csv')
+	df_dimitra['claim'] = df_dimitra['Scientific Claim']
+	df_dimitra['validity'] = df_dimitra['Validity [-2,+2]']
+	df_dimitra = df_dimitra[['claim', 'validity']]
+
+	df_experts = df_dimitra.merge(df_sylvia, on='claim')
+	df_experts.validity_x = df_experts.validity_x.fillna(df_experts.validity_y)
+	df_experts['validity'] = df_experts[['validity_x', 'validity_y']].mean(axis=1)
+	df_experts = df_experts[['claim', 'validity']]
+
+	df = df_experts.merge(df_no, on='claim')
+	print(mean_squared_error(df.validity_x, df.validity_y, squared=False))
+
+	df = df_experts.merge(df_original, on='claim')
+	print(mean_squared_error(df.validity_x, df.validity_y, squared=False))
+
+	df = df_experts.merge(df_enhanced, on='claim')
+	print(mean_squared_error(df.validity_x, df.validity_y, squared=False))
 
 def KDEs():
 	df_enhanced = pd.read_csv(sciclops_dir+'etc/evaluation/enhanced_context.csv')
