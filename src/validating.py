@@ -19,6 +19,14 @@ NUM_CLUSTERS = 10
 LAMBDA = 0.3
 ############################### ######### ###############################
 
+
+def worktime():
+	print(pd.read_csv(sciclops_dir+'etc/evaluation/enhanced_context.csv').WorkTimeInSeconds.median())
+	print(pd.read_csv(sciclops_dir+'etc/evaluation/original_context.csv').WorkTimeInSeconds.median())
+	print(pd.read_csv(sciclops_dir+'etc/evaluation/no_context.csv').WorkTimeInSeconds.median())
+
+worktime()
+
 def RMSE():
 	df_enhanced = pd.read_csv(sciclops_dir+'etc/evaluation/enhanced_context.csv')
 	df_enhanced['claim'] = df_enhanced['Input.main_claim']
@@ -50,6 +58,7 @@ def RMSE():
 
 	df_experts = df_dimitra.merge(df_sylvia, on='claim')
 	df_experts.validity_x = df_experts.validity_x.fillna(df_experts.validity_y)
+	print(mean_squared_error(df_experts.validity_x, df_experts.validity_y, squared=False))
 	df_experts['validity'] = df_experts[['validity_x', 'validity_y']].mean(axis=1)
 	df_experts = df_experts[['claim', 'validity']]
 
@@ -86,22 +95,26 @@ def KDEs():
 
 	sns.set(context='paper', style='white', color_codes=True, font_scale=2.5)
 	sns.set_palette('colorblind')
-	fig, (ax0, ax1) = plt.subplots(nrows=1, ncols=2, figsize=(12,10))
+	fig, (ax0, ax1) = plt.subplots(nrows=1, ncols=2, figsize=(25,10))
 	for ind, ax in zip(['confidence', 'effort'], [ax0, ax1]):
-		for df, l, c in zip([df_enhanced, df_original, df_no], ['Enhanced', 'Original', 'No'], ['#D9514EFF', '#2A2B2DFF', '#2DA8D8FF']):
+		for df, l, c in zip([df_no, df_original, df_enhanced], ['Without', 'With Original', 'With Enhanced'], ['#2DA8D8FF', '#2A2B2DFF', '#D9514EFF']):
 			#df = df.sort_values(by='confidence')[:int(.3*len(df))]
 			ax = sns.kdeplot(df.groupby('claim').mean()[ind], label=l+' Context', color=c, shade= True, ax=ax)
 			ax.set(ylim=(0, .9))	
-			ax.set_xlabel(ind.capitalize(), fontsize='large')
+			ax.set_xlabel(ind.capitalize(), fontsize='xx-large')
 			ax.get_legend().remove()
 			ax.set_xticks([0,2,4])
-			ax.set_xticklabels(['Low', 'Medium', 'High'])
+			ax.set_xticklabels(['Low', 'Medium', 'High'], fontsize='x-large')
 
-	ax0.set_ylabel('Density', fontsize='large')	
+	ax0.set_ylabel('Density', fontsize='xx-large')	
+	ax0.tick_params(axis='y', which='major', labelsize='x-large')
 	ax1.get_yaxis().set_visible(False)
 
 	lines, labels = ax1.get_legend_handles_labels()    
-	fig.legend(lines, labels, loc = 'upper right', ncol=1, bbox_to_anchor=(.87, .87))
+	legend = fig.legend(lines, labels, loc = 'upper right', ncol=1, bbox_to_anchor=(.83, .89), frameon=False, fontsize='xx-large')
+	
+	for handle in legend.legendHandles:
+		handle.set_linewidth('7.0')	
 
 	sns.despine(left=True, bottom=True)
 	plt.show()
