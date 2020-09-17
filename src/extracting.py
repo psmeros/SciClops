@@ -13,6 +13,7 @@ scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
 CLAIM_THRESHOLD = 10
+LIFT_THRESHOLD = .95
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -22,8 +23,6 @@ def read_graph(graph_file):
 	return nx.from_pandas_edgelist(pd.read_csv(graph_file, sep='\t', header=None), 0, 1, create_using=nx.DiGraph())
 
 def soft_labeling():	
-	nlp = spacy.load('en_core_web_lg')
-
 	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
 	titles = articles[['url', 'title']].drop_duplicates(subset='url')
 	tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
@@ -53,10 +52,10 @@ def soft_labeling():
 	negative_samples['label'] = 0
 	negative_samples
 
-	pd.concat([positive_samples, negative_samples]).to_csv(sciclops_dir+'small_files/arguments/scientific.tsv', sep='\t', index=False)
+	pd.concat([positive_samples, negative_samples]).to_csv(sciclops_dir+'etc/arguments/scientific.tsv', sep='\t', index=False)
 
 def prepare_eval_dataset(gold_agreement):
-	df = pd.read_csv(sciclops_dir + 'small_files/arguments/mturk_results.csv')
+	df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results.csv')
 
 	df = df[['Input.sentence', 'Input.golden_label', 'Input.type', 'Answer.claim.label', 'LifetimeApprovalRate']]
 
@@ -74,16 +73,22 @@ def prepare_eval_dataset(gold_agreement):
 	df = df.dropna().reset_index()
 	
 	if gold_agreement == 'strong':
-		df =  df[(df.agreement == 'strong') & (df['golden_label']==df['label'])]
+		df =  df[(df.agreement == 'strong')]
 	elif gold_agreement == 'weak':
 		df =  df[(df.agreement == 'weak')]
 
 	return df[['sentence', 'label']]
 
+
+nlp = spacy.load('en_core_web_lg')
+articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
+tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
+G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
+
 ############################### ######### ###############################
 
 def train_BERT(model='bert-base-uncased'):
-	df = pd.concat([pd.read_csv(sciclops_dir+'small_files/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1), pd.read_csv(sciclops_dir + 'small_files/arguments/scientific.tsv', sep='\t')])
+	df = pd.concat([pd.read_csv(sciclops_dir+'etc/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1), pd.read_csv(sciclops_dir + 'etc/arguments/scientific.tsv', sep='\t')])
 	model = ClassificationModel('bert', model, use_cuda=False)
 	model.train_model(df)
 
@@ -100,10 +105,10 @@ def pred_BERT(model, claimKG=False):
 	model = ClassificationModel('bert', model, use_cuda=False)
 
 	if claimKG:
-		claimsKG = pd.read_csv(sciclops_dir+'small_files/claimKG/claims.csv') 
+		claimsKG = pd.read_csv(sciclops_dir+'etc/claimKG/claims.csv') 
 		claimsKG['label'], _ = model.predict(claimsKG.claimText)
 		claimsKG = claimsKG[claimsKG.label == 1].drop('label', axis=1)
-		claimsKG.to_csv(sciclops_dir+'small_files/claimKG/claims_clean.csv', index=False)
+		claimsKG.to_csv(sciclops_dir+'etc/claimKG/claims_clean.csv', index=False)
 
 	else:
 		articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
@@ -121,37 +126,68 @@ def pred_BERT(model, claimKG=False):
 		articles.to_csv(sciclops_dir+'cache/claims_raw.tsv.bz2', sep='\t', index=False)
 
 def rule_based(gold_agreement):
-	nlp = spacy.load('en_core_web_lg')
-	
+
 	def pattern_search(sentence):
 		sentence = nlp(sentence)
 		
-		action = open(sciclops_dir + 'small_files/keywords/action.txt').read().splitlines()
-		person = open(sciclops_dir + 'small_files/keywords/person.txt').read().splitlines()
-		study = open(sciclops_dir + 'small_files/keywords/study.txt').read().splitlines()
-		vocabulary = open(sciclops_dir + 'small_files/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
+		action = open(sciclops_dir + 'etc/keywords/action.txt').read().splitlines()
+		person = open(sciclops_dir + 'etc/keywords/person.txt').read().splitlines()
+		study = open(sciclops_dir + 'etc/keywords/study.txt').read().splitlines()
+		vocabulary = open(sciclops_dir + 'etc/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
 		entities = [e.text for e in sentence.ents if e.label_ in ['PERSON', 'ORG']]
 		verbs = ([w for w in sentence if w.dep_=='ROOT'] or [None])
 
 		for v in verbs:
 			if v.text in action:
-				return True
+				for np in v.children:
+					if np.dep_ in ['nsubj', 'dobj']:
+						claimer = sentence[np.left_edge.i : np.right_edge.i+1].text
+						for w in entities:
+							if w in claimer:
+								return True 
+		
 			for np in v.children:
 				if np.dep_ in ['nsubj', 'dobj']:
 					claimer = sentence[np.left_edge.i : np.right_edge.i+1].text
-					for w in vocabulary+person+study+entities:
+					for w in vocabulary+person+study:
 						if w in claimer:
 							return True 
 	
 		return False
 
-	df = prepare_eval_dataset(gold_agreement)
-	df['pred'] = df.sentence.apply(lambda s: pattern_search(s))
 
-	df[df['pred'] != df['label']]
+	def max_lift(sentence):
+
+		article_url = list(articles[articles['title'].str.find(sentence) != -1].dropna().index) + list(articles[articles['full_text'].str.find(sentence) != -1].dropna().index)
+
+		if not article_url:
+			return False
+
+		related_tweets = [tweets.loc[t] for t in G.predecessors(article_url[0]) if t in tweets.index]
+
+		if not related_tweets:
+			return False
+
+		overall_popularity =  sum([t['popularity'] for t in related_tweets])
+		support = [t['popularity']/overall_popularity for t in related_tweets]
+
+		confidence = [nlp(t['full_text']).similarity(nlp(sentence)) for t in related_tweets]
+
+		max_lift = max([c/s for s,c in zip(support, confidence)])
+
+		if max_lift > LIFT_THRESHOLD:
+			return True
+
+		return False
+
+
+	df = prepare_eval_dataset(gold_agreement)
+	df['pred'] = df.sentence.apply(lambda s: max_lift(s) and pattern_search(s))
+
 	print(precision_recall_fscore_support(df['label'], df['pred'], average='binary'))
 
+
 if __name__ == "__main__":
-	#rule_based(gold_agreement='weak')
+	rule_based(gold_agreement='strong')
 	#eval_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier', gold_agreement='weak')
-	pred_BERT(sciclops_dir + 'models/tuned-bert-classifier', claimKG=True)
+	#pred_BERT(sciclops_dir + 'models/tuned-bert-classifier', claimKG=True)
