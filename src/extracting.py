@@ -1,3 +1,4 @@
+import os
 import re
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import numpy as np
 import pandas as pd
 import spacy
 from simpletransformers.classification import ClassificationModel
+from simpletransformers.language_modeling import LanguageModelingModel
 from sklearn.metrics import precision_recall_fscore_support
 
 ############################### CONSTANTS ###############################
@@ -13,7 +15,7 @@ scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 
 CLAIM_THRESHOLD = 10
-LIFT_THRESHOLD = .95
+LIFT_THRESHOLD = .8
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
@@ -86,6 +88,15 @@ tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_du
 G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
 
 ############################### ######### ###############################
+
+def pretrain_BERT(model='bert-base-uncased', use_cuda=False):
+	filename = '_df.csv' 
+	df = pd.read_csv(sciclops_dir+'etc/million_headlines/abcnews.csv').drop('publish_date', axis=1)
+	df.to_csv(filename, index=None, header=False)
+	model = LanguageModelingModel('bert', model, use_cuda=use_cuda)
+	model.train_model(filename)
+	os.remove(filename)
+
 
 def train_BERT(model='bert-base-uncased'):
 	df = pd.concat([pd.read_csv(sciclops_dir+'etc/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1), pd.read_csv(sciclops_dir + 'etc/arguments/scientific.tsv', sep='\t')])
