@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import spacy
 from simpletransformers.classification import ClassificationModel
-from simpletransformers.language_modeling import LanguageModelingModel
+from simpletransformers.language_modeling import LanguageModelingModel, LanguageModelingArgs
 from sklearn.metrics import precision_recall_fscore_support
 
 ############################### CONSTANTS ###############################
@@ -93,7 +93,9 @@ def pretrain_BERT(model='bert-base-uncased', use_cuda=False):
 	filename = '_df.csv' 
 	df = pd.read_csv(sciclops_dir+'etc/million_headlines/abcnews.csv').drop('publish_date', axis=1)
 	df.to_csv(filename, index=None, header=False)
-	model = LanguageModelingModel('bert', model, use_cuda=use_cuda)
+	model_args = LanguageModelingArgs()
+	model_args.fp16 = False
+	model = LanguageModelingModel('bert', model, use_cuda=use_cuda, args=model_args)
 	model.train_model(filename)
 	os.remove(filename)
 
@@ -199,6 +201,7 @@ def rule_based(gold_agreement):
 
 
 if __name__ == "__main__":
-	rule_based(gold_agreement='strong')
+	pretrain_BERT(model='bert-base-uncased', use_cuda=True)
+	#rule_based(gold_agreement='strong')
 	#eval_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier', gold_agreement='weak')
 	#pred_BERT(sciclops_dir + 'models/tuned-bert-classifier', claimKG=True)
