@@ -1,4 +1,5 @@
 import os
+import random
 import re
 from pathlib import Path
 
@@ -7,7 +8,8 @@ import numpy as np
 import pandas as pd
 import spacy
 from simpletransformers.classification import ClassificationModel
-from simpletransformers.language_modeling import LanguageModelingModel, LanguageModelingArgs
+from simpletransformers.language_modeling import (LanguageModelingArgs,
+                                                  LanguageModelingModel)
 from sklearn.metrics import precision_recall_fscore_support
 
 ############################### CONSTANTS ###############################
@@ -23,6 +25,15 @@ LIFT_THRESHOLD = .8
 #Read diffusion graph
 def read_graph(graph_file):
 	return nx.from_pandas_edgelist(pd.read_csv(graph_file, sep='\t', header=None), 0, 1, create_using=nx.DiGraph())
+
+
+def annotation_sampling(num, max_sents=5):
+	sentences = articles[['title', 'full_text']].sample(num)
+	sentences = sentences.apply(lambda r: [r['title']] + [re.sub('\n', '', s.text) for _,s in zip(range(max_sents), nlp(r['full_text']).sents) if len(s) >= CLAIM_THRESHOLD and s[0].is_upper], axis=1)
+	weights = sentences.apply(lambda l: [len(l) - l.index(s) for s in l])
+	
+	df = pd.DataFrame([random.choices(sentences[i], weights[i])[0] for i in range(num)], columns=['sentence'])
+	df.to_csv(sciclops_dir + 'etc/arguments/validation_set.csv', index=False)
 
 def negative_sampling(training, num, max_prob=True):
 	#separate training and testing negative samples
@@ -41,7 +52,7 @@ def negative_sampling(training, num, max_prob=True):
 
 def prepare_eval_dataset(gold_agreement):
 	df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results.csv')
-	ns = pd.read_csv(sciclops_dir + 'etc/arguments/negative_samples.tsv', sep='\t')[300:-300]
+	#ns = pd.read_csv(sciclops_dir + 'etc/arguments/negative_samples.tsv', sep='\t')[300:-300]
 
 	df = df[['Input.sentence', 'Input.golden_label', 'Input.type', 'Answer.claim.label', 'LifetimeApprovalRate']]
 
@@ -57,7 +68,7 @@ def prepare_eval_dataset(gold_agreement):
 	df.label = df.label.map({'Yes':1, 'No':0})
 
 	df = df.dropna().reset_index()[['sentence', 'label', 'agreement']]
-	df = pd.concat([df, ns])
+	#df = pd.concat([df, ns])
 
 	return df[(df.agreement == gold_agreement)]
 
