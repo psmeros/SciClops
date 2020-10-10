@@ -85,13 +85,16 @@ def pretrain_BERT(model='bert-base-uncased', use_cuda=False):
 
 
 def train_BERT(model='bert-base-uncased', weak_labels=False, use_cuda=False):
-	if weak_labels:
-		df = pd.concat([pd.read_csv(sciclops_dir+'etc/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1), pd.read_csv(sciclops_dir + 'etc/arguments/scientific.tsv', sep='\t')])
-	else:
-		df = pd.read_csv(sciclops_dir+'etc/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1)
+	df1 = pd.read_csv(sciclops_dir+'etc/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1)
+	df2 = pd.read_csv(sciclops_dir+'etc/arguments/IBM_full.csv')
+	df2['label'] = 1
+	df = pd.concat([df1, df2]) if weak_labels else df1
 	
-	model = ClassificationModel('bert', model, use_cuda)
+	model_args = LanguageModelingArgs()
+	model_args.fp16 = False
+	model = ClassificationModel('bert', model, use_cuda=use_cuda, args=model_args)
 	model.train_model(df)
+
 
 def eval_BERT(model, gold_agreement):
 	df = prepare_eval_dataset(gold_agreement)
@@ -201,6 +204,8 @@ def rule_based(gold_agreement, how):
 
 if __name__ == "__main__":
 	#pretrain_BERT(model='bert-base-uncased', use_cuda=True)
-	rule_based(gold_agreement='weak', how='both_and')
+	train_BERT(model=sciclops_dir + 'models/SciNewsBERT', weak_labels=True, use_cuda=True)
+	#rule_based(gold_agreement='weak', how='both_and')
+
 	#eval_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier', gold_agreement='weak')
 	#pred_BERT(sciclops_dir + 'models/tuned-bert-classifier', claimKG=True)
