@@ -52,23 +52,16 @@ def negative_sampling(training, num, max_prob=True):
 
 def prepare_eval_dataset(gold_agreement):
 	df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results.csv')
-	#ns = pd.read_csv(sciclops_dir + 'etc/arguments/negative_samples.tsv', sep='\t')[300:-300]
 
-	df = df[['Input.sentence', 'Input.golden_label', 'Input.type', 'Answer.claim.label', 'LifetimeApprovalRate']]
+	df = df.rename(columns={'Input.sentence':'sentence', 'Answer.False.False':'False', 'Answer.NA.NA':'NA', 'Answer.True.True':'True'})
+	df = df[['sentence', 'False', 'NA', 'True']]
 
-	df = df.rename(columns={'Input.sentence':'sentence', 'Input.golden_label':'golden_label', 'Input.type':'type', 'Answer.claim.label':'label', 'LifetimeApprovalRate':'approval'})
+	df = df.groupby('sentence').idxmax(axis=1).reset_index().rename(columns={ 0:'label'})[['sentence', 'label']]
 
-	df = df.dropna()
-	df = df[df.approval.apply(lambda x: int(re.sub(r'\%.*', '', x))) != 0]
+	df = pd.DataFrame(df.groupby('sentence').apply(lambda x: (lambda c: (c.index[0][1], 'strong') if c.get(0) - c.get(1, default=0) > 1 else (c.index[0][1], 'weak') if c.get(0) - c.get(1, default=0) == 1 else np.nan)(x.value_counts())).apply(pd.Series)).dropna()
 
-	#aggregate results from crowdworkers
-	df = pd.DataFrame(df.groupby(['sentence', 'type', 'golden_label'])['label'].apply(lambda x: (lambda c: (c.index[0], 'strong') if c.get(0) - c.get(1, default=0) > 1 else (c.index[0], 'weak') if c.get(0) - c.get(1, default=0) == 1 else np.nan)(x.value_counts())).apply(pd.Series))
-
-	df = df.rename(columns={0:'label', 1: 'agreement'})
-	df.label = df.label.map({'Yes':1, 'No':0})
-
-	df = df.dropna().reset_index()[['sentence', 'label', 'agreement']]
-	#df = pd.concat([df, ns])
+	df = df.rename(columns={0:'label', 1: 'agreement'}).reset_index()
+	df.label = df.label.map({'True':1, 'False':0})
 
 	return df[(df.agreement == gold_agreement)]
 
@@ -91,9 +84,13 @@ def pretrain_BERT(model='bert-base-uncased', use_cuda=False):
 	os.remove(filename)
 
 
-def train_BERT(model='bert-base-uncased'):
-	df = pd.concat([pd.read_csv(sciclops_dir+'etc/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1), pd.read_csv(sciclops_dir + 'etc/arguments/scientific.tsv', sep='\t')])
-	model = ClassificationModel('bert', model, use_cuda=False)
+def train_BERT(model='bert-base-uncased', weak_labels=False, use_cuda=False):
+	if weak_labels:
+		df = pd.concat([pd.read_csv(sciclops_dir+'etc/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1), pd.read_csv(sciclops_dir + 'etc/arguments/scientific.tsv', sep='\t')])
+	else:
+		df = pd.read_csv(sciclops_dir+'etc/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1)
+	
+	model = ClassificationModel('bert', model, use_cuda)
 	model.train_model(df)
 
 def eval_BERT(model, gold_agreement):
@@ -129,7 +126,7 @@ def pred_BERT(model, claimKG=False):
 		articles = articles.groupby('url')['claim'].apply(list).reset_index()
 		articles.to_csv(sciclops_dir+'cache/claims_raw.tsv.bz2', sep='\t', index=False)
 
-def rule_based(gold_agreement):
+def rule_based(gold_agreement, how):
 
 	def pattern_search(sentence):
 		sentence = nlp(sentence)
@@ -186,13 +183,24 @@ def rule_based(gold_agreement):
 
 
 	df = prepare_eval_dataset(gold_agreement)
-	df['pred'] = df.sentence.apply(lambda s: max_lift(s) or pattern_search(s))
 
+	if how == 'lift_only':
+		f = lambda s: max_lift(s)
+	elif how == 'pattern_only':
+		f = lambda s: pattern_search(s)
+	elif how == 'both_or':
+		f = lambda s: max_lift(s) or pattern_search(s)
+	elif how == 'both_and':
+		f = lambda s: max_lift(s) and pattern_search(s)
+
+	df['pred'] = df.sentence.apply(f)
+
+	print(df.label.value_counts())
 	print(precision_recall_fscore_support(df['label'], df['pred'], average='binary'))
 
 
 if __name__ == "__main__":
 	#pretrain_BERT(model='bert-base-uncased', use_cuda=True)
-	rule_based(gold_agreement='strong')
+	rule_based(gold_agreement='weak', how='both_and')
 	#eval_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier', gold_agreement='weak')
 	#pred_BERT(sciclops_dir + 'models/tuned-bert-classifier', claimKG=True)
