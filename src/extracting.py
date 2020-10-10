@@ -24,40 +24,24 @@ LIFT_THRESHOLD = .8
 def read_graph(graph_file):
 	return nx.from_pandas_edgelist(pd.read_csv(graph_file, sep='\t', header=None), 0, 1, create_using=nx.DiGraph())
 
-def soft_labeling():	
-	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
-	titles = articles[['url', 'title']].drop_duplicates(subset='url')
-	tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
-
-	G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
-
-	titles['prior'] = titles.apply(lambda x: [str(tweets.loc[t]['full_text']).split()[0] == str(x.title).split()[0] for t in G.predecessors(x.url) if t in tweets.index], axis=1).apply(lambda x: sum(x)/len(x) if len(x) else 0)
-
-	#titles['prior'].hist()
-	positive_samples = titles[titles.prior == 1].title
-
-	#downsample negative samples
-	negative_samples = articles['full_text'].sample(2*len(positive_samples))
+def negative_sampling(training, num, max_prob=True):
+	#separate training and testing negative samples
+	negative_samples = articles['full_text'][1000:].sample(num) if training else articles['full_text'][:1000].sample(num)
 	#split to list of sentences in list of paragraphs
 	negative_samples = negative_samples.apply(lambda t: [list(nlp(p).sents) for p in t.split('\n')[2:-5] if p])
 	#compute the probability of a sentence NOT to be a claim
 	negative_samples = negative_samples.apply(lambda t: [(''.join(str(s)), (t.index(p)/len(t))*(p.index(s)/len(p))) for p in t for s in p if len(s) >= CLAIM_THRESHOLD])
-	#keep the sentence with the max probability 
-	negative_samples = negative_samples.apply(lambda s: max([('',0)]+s, key = lambda i : i[1])[0])
+	#keep the sentence with the max probability
+	i = -1 if max_prob else -2
+	negative_samples = negative_samples.apply(lambda s: sorted([('',0)]+[('',0)]+s, key=lambda i: i[1])[i][0]).tolist()
+	negative_samples = [s for s in negative_samples if s!= '']
 
-	positive_samples = pd.DataFrame(positive_samples).rename(columns={'title': 'sentence'})
-	positive_samples['label'] = 1
-	positive_samples
+	return negative_samples
 
-	negative_samples = pd.DataFrame(negative_samples).rename(columns={'full_text': 'sentence'})
-	negative_samples = negative_samples[negative_samples.sentence.str.len() != 0][:len(positive_samples)]
-	negative_samples['label'] = 0
-	negative_samples
-
-	pd.concat([positive_samples, negative_samples]).to_csv(sciclops_dir+'etc/arguments/scientific.tsv', sep='\t', index=False)
 
 def prepare_eval_dataset(gold_agreement):
 	df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results.csv')
+	ns = pd.read_csv(sciclops_dir + 'etc/arguments/negative_samples.tsv', sep='\t')[300:-300]
 
 	df = df[['Input.sentence', 'Input.golden_label', 'Input.type', 'Answer.claim.label', 'LifetimeApprovalRate']]
 
@@ -72,14 +56,10 @@ def prepare_eval_dataset(gold_agreement):
 	df = df.rename(columns={0:'label', 1: 'agreement'})
 	df.label = df.label.map({'Yes':1, 'No':0})
 
-	df = df.dropna().reset_index()
-	
-	if gold_agreement == 'strong':
-		df =  df[(df.agreement == 'strong')]
-	elif gold_agreement == 'weak':
-		df =  df[(df.agreement == 'weak')]
+	df = df.dropna().reset_index()[['sentence', 'label', 'agreement']]
+	df = pd.concat([df, ns])
 
-	return df[['sentence', 'label']]
+	return df[(df.agreement == gold_agreement)]
 
 
 nlp = spacy.load('en_core_web_lg')
@@ -195,13 +175,13 @@ def rule_based(gold_agreement):
 
 
 	df = prepare_eval_dataset(gold_agreement)
-	df['pred'] = df.sentence.apply(lambda s: max_lift(s) and pattern_search(s))
+	df['pred'] = df.sentence.apply(lambda s: max_lift(s) or pattern_search(s))
 
 	print(precision_recall_fscore_support(df['label'], df['pred'], average='binary'))
 
 
 if __name__ == "__main__":
-	pretrain_BERT(model='bert-base-uncased', use_cuda=True)
-	#rule_based(gold_agreement='strong')
+	#pretrain_BERT(model='bert-base-uncased', use_cuda=True)
+	rule_based(gold_agreement='strong')
 	#eval_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier', gold_agreement='weak')
 	#pred_BERT(sciclops_dir + 'models/tuned-bert-classifier', claimKG=True)
