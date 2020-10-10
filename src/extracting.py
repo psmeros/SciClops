@@ -15,6 +15,9 @@ from sklearn.metrics import precision_recall_fscore_support
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
+hn_vocabulary = open(sciclops_dir + 'etc/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
+
+np.random.seed(42)
 
 CLAIM_THRESHOLD = 10
 LIFT_THRESHOLD = .8
@@ -35,17 +38,18 @@ def annotation_sampling(num, max_sents=5):
 	df = pd.DataFrame([random.choices(sentences[i], weights[i])[0] for i in range(num)], columns=['sentence'])
 	df.to_csv(sciclops_dir + 'etc/arguments/validation_set.csv', index=False)
 
-def negative_sampling(training, num, max_prob=True):
+def negative_sampling(num, max_sents=10):
 	#separate training and testing negative samples
-	negative_samples = articles['full_text'][1000:].sample(num) if training else articles['full_text'][:1000].sample(num)
+	negative_samples = articles['full_text'].sample(num)
 	#split to list of sentences in list of paragraphs
-	negative_samples = negative_samples.apply(lambda t: [list(nlp(p).sents) for p in t.split('\n')[2:-5] if p])
+	negative_samples = negative_samples.apply(lambda t: [ [re.sub('\n', '', s.text) for _,s in zip(range(max_sents), nlp(p).sents) if len(s) >= CLAIM_THRESHOLD and s[0].is_upper] for p in t.split('\n')[2:-5] if p])
 	#compute the probability of a sentence NOT to be a claim
-	negative_samples = negative_samples.apply(lambda t: [(''.join(str(s)), (t.index(p)/len(t))*(p.index(s)/len(p))) for p in t for s in p if len(s) >= CLAIM_THRESHOLD])
+	negative_samples = negative_samples.apply(lambda t: [(s, (t.index(p)/len(t))*(p.index(s)/len(p))) for p in t for s in p])
 	#keep the sentence with the max probability
-	i = -1 if max_prob else -2
-	negative_samples = negative_samples.apply(lambda s: sorted([('',0)]+[('',0)]+s, key=lambda i: i[1])[i][0]).tolist()
-	negative_samples = [s for s in negative_samples if s!= '']
+	negative_samples = negative_samples.apply(lambda s: (sorted(s, key=lambda i: i[1])[0][0]) if s else np.nan).dropna().to_list()
+		
+	negative_samples = pd.DataFrame(negative_samples, columns=['sentence'])
+	negative_samples['label'] = 0
 
 	return negative_samples
 
@@ -85,10 +89,13 @@ def pretrain_BERT(model='bert-base-uncased', use_cuda=False):
 
 
 def train_BERT(model='bert-base-uncased', weak_labels=False, use_cuda=False):
-	df1 = pd.read_csv(sciclops_dir+'etc/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1)
-	df2 = pd.read_csv(sciclops_dir+'etc/arguments/IBM_full.csv')
-	df2['label'] = 1
-	df = pd.concat([df1, df2]) if weak_labels else df1
+	df = pd.read_csv(sciclops_dir+'etc/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1)
+	
+	if weak_labels:
+		df2 = pd.read_csv(sciclops_dir+'etc/arguments/IBM_small.tsv', sep='\t')
+		df2 = df2.sample(int(len(df)/2))	
+		df3 = negative_sampling(int(len(df)/2))
+		df = pd.concat([df, df2, df3])
 	
 	model_args = LanguageModelingArgs()
 	model_args.fp16 = False
@@ -204,8 +211,7 @@ def rule_based(gold_agreement, how):
 
 if __name__ == "__main__":
 	#pretrain_BERT(model='bert-base-uncased', use_cuda=True)
-	train_BERT(model=sciclops_dir + 'models/SciNewsBERT', weak_labels=True, use_cuda=True)
+	#train_BERT(model=sciclops_dir + 'models/SciNewsBERT', weak_labels=True, use_cuda=True)
 	#rule_based(gold_agreement='weak', how='both_and')
-
-	#eval_BERT(sciclops_dir + 'models/fine-tuned-bert-classifier', gold_agreement='weak')
+	eval_BERT(sciclops_dir + 'models/VanillaSciNewsBERT', gold_agreement='weak')
 	#pred_BERT(sciclops_dir + 'models/tuned-bert-classifier', claimKG=True)
