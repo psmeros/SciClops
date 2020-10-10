@@ -38,16 +38,20 @@ def annotation_sampling(num, max_sents=5):
 	df = pd.DataFrame([random.choices(sentences[i], weights[i])[0] for i in range(num)], columns=['sentence'])
 	df.to_csv(sciclops_dir + 'etc/arguments/validation_set.csv', index=False)
 
-def negative_sampling(num, max_sents=10):
-	#separate training and testing negative samples
-	negative_samples = articles['full_text'].sample(num)
-	#split to list of sentences in list of paragraphs
-	negative_samples = negative_samples.apply(lambda t: [ [re.sub('\n', '', s.text) for _,s in zip(range(max_sents), nlp(p).sents) if len(s) >= CLAIM_THRESHOLD and s[0].is_upper] for p in t.split('\n')[2:-5] if p])
-	#compute the probability of a sentence NOT to be a claim
-	negative_samples = negative_samples.apply(lambda t: [(s, (t.index(p)/len(t))*(p.index(s)/len(p))) for p in t for s in p])
-	#keep the sentence with the max probability
-	negative_samples = negative_samples.apply(lambda s: (sorted(s, key=lambda i: i[1])[0][0]) if s else np.nan).dropna().to_list()
-		
+def negative_sampling(num, random_negative=False, max_sents=10):
+	if random_negative:
+		negative_samples = articles['full_text'].sample(num)
+		negative_samples = negative_samples.apply(lambda s: random.choice(list(nlp(s).sents)).text).dropna().to_list()
+	else:
+		#separate training and testing negative samples
+		negative_samples = articles['full_text'].sample(num)
+		#split to list of sentences in list of paragraphs
+		negative_samples = negative_samples.apply(lambda t: [[re.sub('\n', '', s) for _,s in zip(range(max_sents), p.split('.')) if len(s) >= CLAIM_THRESHOLD] for p in t.split('\n')[2:-5] if p])
+		#compute the probability of a sentence NOT to be a claim
+		negative_samples = negative_samples.apply(lambda t: [(s, (t.index(p)/len(t))*(p.index(s)/len(p))) for p in t for s in p])
+		#keep the sentence with the max probability
+		negative_samples = negative_samples.apply(lambda s: (sorted(s, key=lambda i: i[1])[0][0]) if s else np.nan).dropna().to_list()
+			
 	negative_samples = pd.DataFrame(negative_samples, columns=['sentence'])
 	negative_samples['label'] = 0
 
@@ -59,6 +63,7 @@ def prepare_eval_dataset(gold_agreement):
 
 	df = df.rename(columns={'Input.sentence':'sentence', 'Answer.False.False':'False', 'Answer.NA.NA':'NA', 'Answer.True.True':'True'})
 	df = df[['sentence', 'False', 'NA', 'True']]
+	df = df[df['NA']==False]
 
 	df = df.groupby('sentence').idxmax(axis=1).reset_index().rename(columns={ 0:'label'})[['sentence', 'label']]
 
@@ -66,6 +71,7 @@ def prepare_eval_dataset(gold_agreement):
 
 	df = df.rename(columns={0:'label', 1: 'agreement'}).reset_index()
 	df.label = df.label.map({'True':1, 'False':0})
+	# df = pd.concat([df[df.label == 1], df[df.label == 0].sample(2*len(df[df.label == 1]))])
 
 	return df[(df.agreement == gold_agreement)]
 
@@ -213,5 +219,5 @@ if __name__ == "__main__":
 	#pretrain_BERT(model='bert-base-uncased', use_cuda=True)
 	#train_BERT(model=sciclops_dir + 'models/SciNewsBERT', weak_labels=True, use_cuda=True)
 	#rule_based(gold_agreement='weak', how='both_and')
-	eval_BERT(sciclops_dir + 'models/VanillaSciNewsBERT', gold_agreement='weak')
+	eval_BERT(sciclops_dir + 'models/TunedSciNewsBERT', gold_agreement='strong')
 	#pred_BERT(sciclops_dir + 'models/tuned-bert-classifier', claimKG=True)
