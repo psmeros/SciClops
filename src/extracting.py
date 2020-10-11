@@ -30,6 +30,12 @@ LIFT_THRESHOLD = .8
 def read_graph(graph_file):
 	return nx.from_pandas_edgelist(pd.read_csv(graph_file, sep='\t', header=None), 0, 1, create_using=nx.DiGraph())
 
+#data
+nlp = spacy.load('en_core_web_lg')
+articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
+tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
+G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
+
 
 def annotation_sampling(num, max_sents=5):
 	sentences = articles[['title', 'full_text']].sample(num)
@@ -47,7 +53,7 @@ def negative_sampling(num, random_negative=False, max_sents=10):
 		#separate training and testing negative samples
 		negative_samples = articles['full_text'].sample(num)
 		#split to list of sentences in list of paragraphs
-		negative_samples = negative_samples.apply(lambda t: [[re.sub('\n', '', s) for _,s in zip(range(max_sents), p.split('.')) if len(s) >= CLAIM_THRESHOLD] for p in t.split('\n')[2:-5] if p])
+		negative_samples = negative_samples.apply(lambda t: [[re.sub('\n', '', s.text) for _,s in zip(range(max_sents), nlp(p).sents) if len(s) >= CLAIM_THRESHOLD] for p in t.split('\n')[2:-5] if p])
 		#compute the probability of a sentence NOT to be a claim
 		negative_samples = negative_samples.apply(lambda t: [(s, (t.index(p)/len(t))*(p.index(s)/len(p))) for p in t for s in p])
 		#keep the sentence with the max probability
@@ -57,10 +63,6 @@ def negative_sampling(num, random_negative=False, max_sents=10):
 	negative_samples['label'] = 0
 
 	return negative_samples
-
-def prepare_eval_dataset(gold_agreement):
-	df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results_full.tsv', sep='\t')
-	return df[(df.agreement == gold_agreement)]
 
 def process_eval_dataset():
 	#round 1
@@ -102,11 +104,6 @@ def process_eval_dataset():
 	df.to_csv(sciclops_dir + 'etc/arguments/mturk_results_full.tsv', sep='\t', index=False)
 
 
-nlp = spacy.load('en_core_web_lg')
-articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
-tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
-G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
-
 ############################### ######### ###############################
 
 def pretrain_BERT(model='bert-base-uncased', use_cuda=False):
@@ -120,77 +117,73 @@ def pretrain_BERT(model='bert-base-uncased', use_cuda=False):
 	os.remove(filename)
 
 
-def train_BERT(model, training_set, use_cuda=False):
-	
-	df = pd.read_csv(training_set, sep='\t')
+def evaluate_BERT(model_path, training_set, use_cuda=False, crowd_evaluation=False):
 
-	model_args = LanguageModelingArgs()
-	model_args.fp16 = False
-	model = ClassificationModel('bert', model, use_cuda=use_cuda, args=model_args)
-	model.train_model(df[['sentence', 'label']])
-
-
-def evaluate_BERT(model_path, training_set, use_cuda=False):
-
-	df = pd.read_csv(training_set, sep='\t')
-	X = df['sentence'].values
-	y = df['label'].values
-	
-	fold = 5
-	kf = KFold(n_splits=fold, shuffle=True)
-	
-	score = 0.0
-	for train_index, test_index in kf.split(X):
-
-		X_train, X_test = X[train_index], X[test_index]
-		y_train, y_test = y[train_index], y[test_index]
-
-		df_train = pd.DataFrame([X_train, y_train]).T.rename(columns={0:'sentence', 1:'label'})
-		df_test = pd.DataFrame([X_test, y_test]).T.rename(columns={0:'sentence', 1:'label'})
+	if crowd_evaluation:
+		df = pd.read_csv(training_set, sep='\t')
 
 		model_args = LanguageModelingArgs()
 		model_args.fp16 = False
 		model = ClassificationModel('bert', model_path, use_cuda=use_cuda, args=model_args)
-		model.train_model(df_train, args={'overwrite_output_dir':True})
+		model.train_model(df[['sentence', 'label']], args={'overwrite_output_dir':True})
 
-		df_test['pred'], _ = model.predict(df_test['sentence'].to_list())
-
-		score += accuracy_score(list(df_test['label']), list(df_test['pred']))
-
-	print('\n\n\nScore:', score/fold)
-
-def evaluate_BERT_crowd(model, gold_agreement):
-	df = prepare_eval_dataset(gold_agreement)
-	model = ClassificationModel('bert', model, use_cuda=False)
-	df['pred'], _ = model.predict(df['sentence'].to_list())
-
-	print(precision_recall_fscore_support(df['label'], df['pred'], average='binary'))
-
-def pred_BERT(model, claimKG=False):
-	model = ClassificationModel('bert', model, use_cuda=False)
-
-	if claimKG:
-		claimsKG = pd.read_csv(sciclops_dir+'etc/claimKG/claims.csv') 
-		claimsKG['label'], _ = model.predict(claimsKG.claimText)
-		claimsKG = claimsKG[claimsKG.label == 1].drop('label', axis=1)
-		claimsKG.to_csv(sciclops_dir+'etc/claimKG/claims_clean.csv', index=False)
+		for crowd_agreement in ['strong', 'weak']:
+			df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results_full.tsv', sep='\t')
+			df = df[(df.agreement == crowd_agreement)]
+			
+			df['pred'], _ = model.predict(df['sentence'].to_list())
+			result = precision_recall_fscore_support(df['label'], df['pred'], average='binary')
+			with open ('results.txt', 'a+') as f: f.write ('Model Path: '+ model_path + '\nTraining set: '+ training_set + '\nCrowd Agreement: '+ crowd_agreement + '\nResult: ' + str(result)+'\n\n\n')
 
 	else:
-		articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
-		titles = articles[['url', 'title']].drop_duplicates(subset='url').rename(columns={'title': 'claim'})
-		articles = articles[['url', 'quotes']].drop_duplicates(subset='url')
-		articles.quotes = articles.quotes.apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
-		articles = articles.explode('quotes').rename(columns={'quotes': 'claim'})
-		articles = pd.concat([articles, titles])
-		articles = articles[~articles['claim'].isna()]
+		df = pd.read_csv(training_set, sep='\t')
+		X = df['sentence'].values
+		y = df['label'].values
+		
+		fold = 5
+		kf = KFold(n_splits=fold, shuffle=True)
+		
+		score = 0.0
+		for train_index, test_index in kf.split(X):
 
-		articles['label'], _ = model.predict(articles.claim)
+			X_train, X_test = X[train_index], X[test_index]
+			y_train, y_test = y[train_index], y[test_index]
 
-		articles = articles[articles.label == 1].drop('label', axis=1)
-		articles = articles.groupby('url')['claim'].apply(list).reset_index()
-		articles.to_csv(sciclops_dir+'cache/claims_raw.tsv.bz2', sep='\t', index=False)
+			df_train = pd.DataFrame([X_train, y_train]).T.rename(columns={0:'sentence', 1:'label'})
+			df_test = pd.DataFrame([X_test, y_test]).T.rename(columns={0:'sentence', 1:'label'})
 
-def rule_based(gold_agreement, how):
+			model_args = LanguageModelingArgs()
+			model_args.fp16 = False
+			model = ClassificationModel('bert', model_path, use_cuda=use_cuda, args=model_args)
+			model.train_model(df_train, args={'overwrite_output_dir':True})
+
+			df_test['pred'], _ = model.predict(df_test['sentence'].to_list())
+
+			score += accuracy_score(list(df_test['label']), list(df_test['pred']))
+
+		with open ('results.txt', 'a+') as f: f.write ('Model Path: '+ model_path + '\nTraining set: '+ training_set + '\nResult: ' + str(score/fold)+'\n\n\n')
+
+
+def use_BERT(model_path, use_cuda=False):
+	model_args = LanguageModelingArgs()
+	model_args.fp16 = False
+	model = ClassificationModel('bert', model_path, use_cuda=use_cuda, args=model_args)
+
+	articles = pd.read_csv(scilens_dir + 'article_details_v3.tsv.bz2', sep='\t')
+	titles = articles[['url', 'title']].drop_duplicates(subset='url').rename(columns={'title': 'claim'})
+	articles = articles[['url', 'quotes']].drop_duplicates(subset='url')
+	articles.quotes = articles.quotes.apply(lambda l: list(map(lambda d: d['quote'], eval(l))))
+	articles = articles.explode('quotes').rename(columns={'quotes': 'claim'})
+	articles = pd.concat([articles, titles])
+	articles = articles[~articles['claim'].isna()]
+
+	articles['label'], _ = model.predict(articles.claim)
+
+	articles = articles[articles.label == 1].drop('label', axis=1)
+	articles = articles.groupby('url')['claim'].apply(list).reset_index()
+	articles.to_csv(sciclops_dir+'cache/claims_raw.tsv.bz2', sep='\t', index=False)
+
+def rule_based(crowd_agreement, how):
 
 	def pattern_search(sentence):
 		sentence = nlp(sentence)
@@ -245,8 +238,8 @@ def rule_based(gold_agreement, how):
 
 		return False
 
-
-	df = prepare_eval_dataset(gold_agreement)
+	df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results_full.tsv', sep='\t')
+	df = df[(df.agreement == crowd_agreement)]
 
 	if how == 'lift_only':
 		f = lambda s: max_lift(s)
@@ -259,14 +252,21 @@ def rule_based(gold_agreement, how):
 
 	df['pred'] = df.sentence.apply(f)
 
-	print(df.label.value_counts())
 	print(precision_recall_fscore_support(df['label'], df['pred'], average='binary'))
 
 
 if __name__ == "__main__":
 	#pretrain_BERT(model='bert-base-uncased', use_cuda=True)
-	#train_BERT(model=sciclops_dir + 'models/SciNewsBERT', weak_labels=True, use_cuda=True)
-	#rule_based(gold_agreement='weak', how='both_and')
-	#eval_BERT(sciclops_dir + 'models/VanillaSciNewsBERT', gold_agreement='weak')
-	#pred_BERT(sciclops_dir + 'models/tuned-bert-classifier', claimKG=True)
-	evaluate_BERT(model_path=sciclops_dir + 'models/SciNewsBERT', training_set=sciclops_dir+'etc/arguments/UKP_IBM.tsv', use_cuda=False)
+	#rule_based(crowd_agreement='weak', how='both_and')
+	evaluate_BERT(model_path='bert-base-uncased', training_set=sciclops_dir+'etc/arguments/UKP_IBM.tsv', use_cuda=True, crowd_evaluation=False)
+	evaluate_BERT(model_path='bert-base-uncased', training_set=sciclops_dir+'etc/arguments/UKP_IBM_full.tsv', use_cuda=True, crowd_evaluation=False)
+
+	evaluate_BERT(model_path='allenai/scibert_scivocab_uncased', training_set=sciclops_dir+'etc/arguments/UKP_IBM.tsv', use_cuda=True, crowd_evaluation=False)
+	evaluate_BERT(model_path='allenai/scibert_scivocab_uncased', training_set=sciclops_dir+'etc/arguments/UKP_IBM_full.tsv', use_cuda=True, crowd_evaluation=False)
+
+	evaluate_BERT(model_path=sciclops_dir + 'models/NewsBERT', training_set=sciclops_dir+'etc/arguments/UKP_IBM.tsv', use_cuda=True, crowd_evaluation=False)
+	evaluate_BERT(model_path=sciclops_dir + 'models/NewsBERT', training_set=sciclops_dir+'etc/arguments/UKP_IBM_full.tsv', use_cuda=True, crowd_evaluation=False)
+	
+	evaluate_BERT(model_path=sciclops_dir + 'models/SciNewsBERT', training_set=sciclops_dir+'etc/arguments/UKP_IBM.tsv', use_cuda=True, crowd_evaluation=False)
+	evaluate_BERT(model_path=sciclops_dir + 'models/SciNewsBERT', training_set=sciclops_dir+'etc/arguments/UKP_IBM_full.tsv', use_cuda=True, crowd_evaluation=False)
+

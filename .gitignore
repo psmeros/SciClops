@@ -1,6 +1,7 @@
 #BERT
 cache_dir/
 outputs/
+runs/
 
 # MAC
 .DS_Store
