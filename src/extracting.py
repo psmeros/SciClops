@@ -7,9 +7,10 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import spacy
+from sklearn.model_selection import KFold
+from sklearn.metrics import accuracy_score
 from simpletransformers.classification import ClassificationModel
-from simpletransformers.language_modeling import (LanguageModelingArgs,
-                                                  LanguageModelingModel)
+from simpletransformers.language_modeling import (LanguageModelingArgs, LanguageModelingModel)
 from sklearn.metrics import precision_recall_fscore_support
 
 ############################### CONSTANTS ###############################
@@ -57,8 +58,31 @@ def negative_sampling(num, random_negative=False, max_sents=10):
 
 	return negative_samples
 
-
 def prepare_eval_dataset(gold_agreement):
+	df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results_full.tsv', sep='\t')
+	return df[(df.agreement == gold_agreement)]
+
+def process_eval_dataset():
+	#round 1
+	df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results_old.csv')
+
+	df = df[['Input.sentence', 'Input.golden_label', 'Input.type', 'Answer.claim.label', 'LifetimeApprovalRate']]
+	df = df.rename(columns={'Input.sentence':'sentence', 'Input.golden_label':'golden_label', 'Input.type':'type', 'Answer.claim.label':'label', 'LifetimeApprovalRate':'approval'})
+
+	#remove spam crowdworkers
+	df = df[df.approval.apply(lambda x: int(re.sub(r'\%.*', '', x))) != 0]
+
+	#aggregate results from crowdworkers
+	df = pd.DataFrame(df.groupby(['sentence', 'type', 'golden_label'])['label'].apply(lambda x: (lambda c: (c.index[0], 'strong') if c.get(0) - c.get(1, default=0) > 1 else (c.index[0], 'weak') if c.get(0) - c.get(1, default=0) == 1 else np.nan)(x.value_counts())).apply(pd.Series))
+
+	df = df.rename(columns={0:'label', 1: 'agreement'}).reset_index()
+	df.label = df.label.map({'Yes':1, 'No':0})
+	
+	df = df.dropna()[['sentence', 'label', 'agreement']]
+	
+	df1 = df.copy()
+
+	#round 2
 	df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results.csv')
 
 	df = df.rename(columns={'Input.sentence':'sentence', 'Answer.False.False':'False', 'Answer.NA.NA':'NA', 'Answer.True.True':'True'})
@@ -71,9 +95,11 @@ def prepare_eval_dataset(gold_agreement):
 
 	df = df.rename(columns={0:'label', 1: 'agreement'}).reset_index()
 	df.label = df.label.map({'True':1, 'False':0})
-	# df = pd.concat([df[df.label == 1], df[df.label == 0].sample(2*len(df[df.label == 1]))])
 
-	return df[(df.agreement == gold_agreement)]
+	df2 = df.copy()
+
+	df = pd.concat([df1, df2])
+	df.to_csv(sciclops_dir + 'etc/arguments/mturk_results_full.tsv', sep='\t', index=False)
 
 
 nlp = spacy.load('en_core_web_lg')
@@ -94,29 +120,51 @@ def pretrain_BERT(model='bert-base-uncased', use_cuda=False):
 	os.remove(filename)
 
 
-def train_BERT(model='bert-base-uncased', weak_labels=False, use_cuda=False):
-	df = pd.read_csv(sciclops_dir+'etc/arguments/UKP_IBM.tsv', sep='\t').drop('topic', axis=1)
+def train_BERT(model, training_set, use_cuda=False):
 	
-	if weak_labels:
-		df2 = pd.read_csv(sciclops_dir+'etc/arguments/IBM_small.tsv', sep='\t')
-		df2 = df2.sample(int(len(df)/2))	
-		df3 = negative_sampling(int(len(df)/2))
-		df = pd.concat([df, df2, df3])
-	
+	df = pd.read_csv(training_set, sep='\t')
+
 	model_args = LanguageModelingArgs()
 	model_args.fp16 = False
 	model = ClassificationModel('bert', model, use_cuda=use_cuda, args=model_args)
-	model.train_model(df)
+	model.train_model(df[['sentence', 'label']])
 
 
-def eval_BERT(model, gold_agreement):
+def evaluate_BERT(model_path, training_set, use_cuda=False):
+
+	df = pd.read_csv(training_set, sep='\t')
+	X = df['sentence'].values
+	y = df['label'].values
+	
+	fold = 5
+	kf = KFold(n_splits=fold, shuffle=True)
+	
+	score = 0.0
+	for train_index, test_index in kf.split(X):
+
+		X_train, X_test = X[train_index], X[test_index]
+		y_train, y_test = y[train_index], y[test_index]
+
+		df_train = pd.DataFrame([X_train, y_train]).T.rename(columns={0:'sentence', 1:'label'})
+		df_test = pd.DataFrame([X_test, y_test]).T.rename(columns={0:'sentence', 1:'label'})
+
+		model_args = LanguageModelingArgs()
+		model_args.fp16 = False
+		model = ClassificationModel('bert', model_path, use_cuda=use_cuda, args=model_args)
+		model.train_model(df_train, args={'overwrite_output_dir':True})
+
+		df_test['pred'], _ = model.predict(df_test['sentence'].to_list())
+
+		score += accuracy_score(list(df_test['label']), list(df_test['pred']))
+
+	print('\n\n\nScore:', score/fold)
+
+def evaluate_BERT_crowd(model, gold_agreement):
 	df = prepare_eval_dataset(gold_agreement)
 	model = ClassificationModel('bert', model, use_cuda=False)
-	result, _, _ = model.eval_model(df)
-	p = result['tp']/(result['tp']+result['fp'])
-	r = result['tp']/(result['tp']+result['fn'])
-	f1 = 2*p*r/(p+r)
-	print (p,r,f1)
+	df['pred'], _ = model.predict(df['sentence'].to_list())
+
+	print(precision_recall_fscore_support(df['label'], df['pred'], average='binary'))
 
 def pred_BERT(model, claimKG=False):
 	model = ClassificationModel('bert', model, use_cuda=False)
@@ -219,5 +267,6 @@ if __name__ == "__main__":
 	#pretrain_BERT(model='bert-base-uncased', use_cuda=True)
 	#train_BERT(model=sciclops_dir + 'models/SciNewsBERT', weak_labels=True, use_cuda=True)
 	#rule_based(gold_agreement='weak', how='both_and')
-	eval_BERT(sciclops_dir + 'models/TunedSciNewsBERT', gold_agreement='strong')
+	#eval_BERT(sciclops_dir + 'models/VanillaSciNewsBERT', gold_agreement='weak')
 	#pred_BERT(sciclops_dir + 'models/tuned-bert-classifier', claimKG=True)
+	evaluate_BERT(model_path=sciclops_dir + 'models/SciNewsBERT', training_set=sciclops_dir+'etc/arguments/UKP_IBM.tsv', use_cuda=False)
