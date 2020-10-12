@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import spacy
 from sklearn.model_selection import KFold
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 from simpletransformers.classification import ClassificationModel
 from simpletransformers.language_modeling import (LanguageModelingArgs, LanguageModelingModel)
@@ -106,13 +107,13 @@ def process_eval_dataset():
 
 ############################### ######### ###############################
 
-def pretrain_BERT(model='bert-base-uncased', use_cuda=False):
+def pretrain_BERT(model_path, use_cuda=False):
 	filename = '_df.csv' 
 	df = pd.read_csv(sciclops_dir+'etc/million_headlines/abcnews.csv').drop('publish_date', axis=1)
 	df.to_csv(filename, index=None, header=False)
 	model_args = LanguageModelingArgs()
 	model_args.fp16 = False
-	model = LanguageModelingModel('bert', model, use_cuda=use_cuda, args=model_args)
+	model = LanguageModelingModel('bert', model_path, use_cuda=use_cuda, args=model_args)
 	model.train_model(filename)
 	os.remove(filename)
 
@@ -162,6 +163,54 @@ def evaluate_BERT(model_path, training_set, use_cuda=False, crowd_evaluation=Fal
 			score += accuracy_score(list(df_test['label']), list(df_test['pred']))
 
 		with open ('results.txt', 'a+') as f: f.write ('Model Path: '+ model_path + '\nTraining set: '+ training_set + '\nResult: ' + str(score/fold)+'\n\n\n')
+
+
+def evaluate_RF(training_set, crowd_evaluation=False):
+
+	if crowd_evaluation:
+		df = pd.read_csv(training_set, sep='\t')
+		df['vec'] = df['sentence'].apply(lambda s: nlp(s).vector)
+		X = np.array(df['vec'].to_list())
+		y = np.array(df['label'].to_list())
+
+
+		model = RandomForestClassifier(random_state=42)
+		model.fit(X, y)
+	
+		for crowd_agreement in ['strong', 'weak']:
+			df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results_full.tsv', sep='\t')
+			df = df[(df.agreement == crowd_agreement)]
+
+			df['vec'] = df['sentence'].apply(lambda s: nlp(s).vector)
+			X = np.array(df['vec'].to_list())
+			df['pred'] = model.predict(X)
+			
+			result = precision_recall_fscore_support(df['label'], df['pred'], average='binary')
+			with open ('results.txt', 'a+') as f: f.write ('Model Path: Random Forest' + '\nTraining set: '+ training_set + '\nCrowd Agreement: '+ crowd_agreement + '\nResult: ' + str(result)+'\n\n\n')
+
+	else:
+		df = pd.read_csv(training_set, sep='\t')
+		df['vec'] = df['sentence'].apply(lambda s: list(nlp(s).vector))
+		X = np.array(df['vec'].to_list())
+		y = np.array(df['label'].to_list())
+		
+		fold = 5
+		kf = KFold(n_splits=fold, shuffle=True)
+		
+		score = 0.0
+		for train_index, test_index in kf.split(X):
+
+			X_train, X_test = X[train_index], X[test_index]
+			y_train, y_test = y[train_index], y[test_index]
+
+			model = RandomForestClassifier(random_state=42)
+			model.fit(X_train, y_train)
+
+			y_pred = model.predict(X_test)
+
+			score += accuracy_score(list(y_test), list(y_pred))
+
+		with open ('results.txt', 'a+') as f: f.write ('Model Path: Random Forest' + '\nTraining set: '+ training_set + '\nResult: ' + str(score/fold)+'\n\n\n')
 
 
 def use_BERT(model_path, use_cuda=False):
@@ -256,17 +305,20 @@ def rule_based(crowd_agreement, how):
 
 
 if __name__ == "__main__":
-	#pretrain_BERT(model='bert-base-uncased', use_cuda=True)
-	#rule_based(crowd_agreement='weak', how='both_and')
-	evaluate_BERT(model_path='bert-base-uncased', training_set=sciclops_dir+'etc/arguments/UKP_IBM.tsv', use_cuda=True, crowd_evaluation=False)
-	evaluate_BERT(model_path='bert-base-uncased', training_set=sciclops_dir+'etc/arguments/UKP_IBM_full.tsv', use_cuda=True, crowd_evaluation=False)
+	#BERT
+	use_cuda = True
 
-	evaluate_BERT(model_path='allenai/scibert_scivocab_uncased', training_set=sciclops_dir+'etc/arguments/UKP_IBM.tsv', use_cuda=True, crowd_evaluation=False)
-	evaluate_BERT(model_path='allenai/scibert_scivocab_uncased', training_set=sciclops_dir+'etc/arguments/UKP_IBM_full.tsv', use_cuda=True, crowd_evaluation=False)
-
-	evaluate_BERT(model_path=sciclops_dir + 'models/NewsBERT', training_set=sciclops_dir+'etc/arguments/UKP_IBM.tsv', use_cuda=True, crowd_evaluation=False)
-	evaluate_BERT(model_path=sciclops_dir + 'models/NewsBERT', training_set=sciclops_dir+'etc/arguments/UKP_IBM_full.tsv', use_cuda=True, crowd_evaluation=False)
+	for model_path in ['bert-base-uncased', 'allenai/scibert_scivocab_uncased']:
+		pretrain_BERT(model_path=model_path, use_cuda=use_cuda)	
 	
-	evaluate_BERT(model_path=sciclops_dir + 'models/SciNewsBERT', training_set=sciclops_dir+'etc/arguments/UKP_IBM.tsv', use_cuda=True, crowd_evaluation=False)
-	evaluate_BERT(model_path=sciclops_dir + 'models/SciNewsBERT', training_set=sciclops_dir+'etc/arguments/UKP_IBM_full.tsv', use_cuda=True, crowd_evaluation=False)
+	for model_path in ['bert-base-uncased', 'allenai/scibert_scivocab_uncased', sciclops_dir + 'models/NewsBERT', sciclops_dir + 'models/SciNewsBERT']:
+		for training_set in [sciclops_dir+'etc/arguments/UKP_IBM.tsv', sciclops_dir+'etc/arguments/UKP_IBM_full.tsv']:
+			for crowd_evaluation in [True, False]:
+				evaluate_BERT(model_path=model_path, training_set=training_set, use_cuda=use_cuda, crowd_evaluation=crowd_evaluation)
+	#RF
+	for training_set in [sciclops_dir+'etc/arguments/UKP_IBM.tsv', sciclops_dir+'etc/arguments/UKP_IBM_full.tsv']:
+		for crowd_evaluation in [True, False]:
+			evaluate_RF(training_set=training_set, crowd_evaluation=crowd_evaluation)
 
+	#Heuristic
+	#rule_based(crowd_agreement='weak', how='both_and')
