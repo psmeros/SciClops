@@ -18,6 +18,10 @@ from sklearn.metrics import precision_recall_fscore_support
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 hn_vocabulary = open(sciclops_dir + 'etc/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
+action = open(sciclops_dir + 'etc/keywords/action.txt').read().splitlines()
+person = open(sciclops_dir + 'etc/keywords/person.txt').read().splitlines()
+study = open(sciclops_dir + 'etc/keywords/study.txt').read().splitlines()
+
 
 np.random.seed(42)
 
@@ -131,7 +135,6 @@ def evaluate_BERT(model_path, training_set, use_cuda=False, crowd_evaluation=Fal
 		for crowd_agreement in ['strong', 'weak']:
 			df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results_full.tsv', sep='\t')
 			df = df[(df.agreement == crowd_agreement)]
-			
 			df['pred'], _ = model.predict(df['sentence'].to_list())
 			result = precision_recall_fscore_support(df['label'], df['pred'], average='binary')
 			with open ('results.txt', 'a+') as f: f.write ('Model Path: '+ model_path + '\nTraining set: '+ training_set + '\nCrowd Agreement: '+ crowd_agreement + '\nResult: ' + str(result)+'\n\n\n')
@@ -173,14 +176,12 @@ def evaluate_RF(training_set, crowd_evaluation=False):
 		X = np.array(df['vec'].to_list())
 		y = np.array(df['label'].to_list())
 
-
 		model = RandomForestClassifier(random_state=42)
 		model.fit(X, y)
 	
 		for crowd_agreement in ['strong', 'weak']:
 			df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results_full.tsv', sep='\t')
 			df = df[(df.agreement == crowd_agreement)]
-
 			df['vec'] = df['sentence'].apply(lambda s: nlp(s).vector)
 			X = np.array(df['vec'].to_list())
 			df['pred'] = model.predict(X)
@@ -232,15 +233,12 @@ def use_BERT(model_path, use_cuda=False):
 	articles = articles.groupby('url')['claim'].apply(list).reset_index()
 	articles.to_csv(sciclops_dir+'cache/claims_raw.tsv.bz2', sep='\t', index=False)
 
-def rule_based(crowd_agreement, how):
+
+def baseline(sentence, baseline_type):
 
 	def pattern_search(sentence):
 		sentence = nlp(sentence)
 		
-		action = open(sciclops_dir + 'etc/keywords/action.txt').read().splitlines()
-		person = open(sciclops_dir + 'etc/keywords/person.txt').read().splitlines()
-		study = open(sciclops_dir + 'etc/keywords/study.txt').read().splitlines()
-		vocabulary = open(sciclops_dir + 'etc/hn_vocabulary/hn_vocabulary.txt').read().splitlines()
 		entities = [e.text for e in sentence.ents if e.label_ in ['PERSON', 'ORG']]
 		verbs = ([w for w in sentence if w.dep_=='ROOT'] or [None])
 
@@ -256,7 +254,7 @@ def rule_based(crowd_agreement, how):
 			for np in v.children:
 				if np.dep_ in ['nsubj', 'dobj']:
 					claimer = sentence[np.left_edge.i : np.right_edge.i+1].text
-					for w in vocabulary+person+study:
+					for w in hn_vocabulary+person+study:
 						if w in claimer:
 							return True 
 	
@@ -287,21 +285,29 @@ def rule_based(crowd_agreement, how):
 
 		return False
 
-	df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results_full.tsv', sep='\t')
-	df = df[(df.agreement == crowd_agreement)]
+	if baseline_type == 'lift_only':
+		return max_lift(sentence)
+	elif baseline_type == 'pattern_only':
+		return pattern_search(sentence)
+	elif baseline_type == 'both_or':
+		return max_lift(sentence) or pattern_search(sentence)
+	elif baseline_type == 'both_and':
+		return max_lift(sentence) and pattern_search(sentence)
 
-	if how == 'lift_only':
-		f = lambda s: max_lift(s)
-	elif how == 'pattern_only':
-		f = lambda s: pattern_search(s)
-	elif how == 'both_or':
-		f = lambda s: max_lift(s) or pattern_search(s)
-	elif how == 'both_and':
-		f = lambda s: max_lift(s) and pattern_search(s)
+def evaluate_baseline(training_set, baseline_type, crowd_evaluation=False):
+	if crowd_evaluation:	
+		for crowd_agreement in ['strong', 'weak']:
+			df = pd.read_csv(sciclops_dir + 'etc/arguments/mturk_results_full.tsv', sep='\t')
+			df = df[(df.agreement == crowd_agreement)]
+			df['pred'] = df['sentence'].apply(lambda s: baseline(s, baseline_type))
+			result = precision_recall_fscore_support(df['label'], df['pred'], average='binary')
+			with open ('results.txt', 'a+') as f: f.write ('Model Path: '+ baseline_type + '\nTraining set: '+ training_set + '\nCrowd Agreement: '+ crowd_agreement + '\nResult: ' + str(result)+'\n\n\n')
+	else:
+		df = pd.read_csv(training_set, sep='\t')
+		df['pred'] = df['sentence'].apply(lambda s: baseline(s, baseline_type))
+		score = accuracy_score(list(df['label']), list(df['pred']))
+		with open ('results.txt', 'a+') as f: f.write ('Model Path: '+ baseline_type + '\nTraining set: '+ training_set + '\nResult: ' + str(score)+'\n\n\n')
 
-	df['pred'] = df.sentence.apply(f)
-
-	print(precision_recall_fscore_support(df['label'], df['pred'], average='binary'))
 
 
 if __name__ == "__main__":
@@ -315,10 +321,14 @@ if __name__ == "__main__":
 		for training_set in [sciclops_dir+'etc/arguments/UKP_IBM.tsv', sciclops_dir+'etc/arguments/UKP_IBM_full.tsv']:
 			for crowd_evaluation in [True, False]:
 				evaluate_BERT(model_path=model_path, training_set=training_set, use_cuda=use_cuda, crowd_evaluation=crowd_evaluation)
+
 	#RF
 	for training_set in [sciclops_dir+'etc/arguments/UKP_IBM.tsv', sciclops_dir+'etc/arguments/UKP_IBM_full.tsv']:
 		for crowd_evaluation in [True, False]:
 			evaluate_RF(training_set=training_set, crowd_evaluation=crowd_evaluation)
 
-	#Heuristic
-	#rule_based(crowd_agreement='weak', how='both_and')
+	#Baseline
+	for baseline_type in ['pattern_only', 'lift_only']:
+		for training_set in [sciclops_dir+'etc/arguments/UKP_IBM.tsv', sciclops_dir+'etc/arguments/UKP_IBM_full.tsv']:
+			for crowd_evaluation in [True, False]:
+				evaluate_baseline(training_set=training_set, baseline_type=baseline_type, crowd_evaluation=crowd_evaluation)
