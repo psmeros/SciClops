@@ -28,6 +28,8 @@ def worktime():
 worktime()
 
 def RMSE():
+	df_claimbuster = pd.read_csv(sciclops_dir+'etc/evaluation/claimbuster.csv').rename(columns={'Scientific Claim': 'claim', 'fact_check': 'validity'}).drop('URL', axis=1)
+	
 	df_enhanced = pd.read_csv(sciclops_dir+'etc/evaluation/enhanced_context.csv')
 	df_enhanced['claim'] = df_enhanced['Input.main_claim']
 	df_enhanced ['validity'] = 0 * df_enhanced['Answer.ValidityNA.ValidityNA'] + (-2) * df_enhanced['Answer.Validity-2.Validity-2'] + (-1) * df_enhanced['Answer.Validity-1.Validity-1'] + 0 * df_enhanced['Answer.Validity0.Validity0'] + 1 * df_enhanced['Answer.Validity+1.Validity+1'] + 2 * df_enhanced['Answer.Validity+2.Validity+2']
@@ -70,6 +72,10 @@ def RMSE():
 
 	df = df_experts.merge(df_enhanced, on='claim')
 	print(mean_squared_error(df.validity_x, df.validity_y, squared=False))
+
+	df = df_experts.merge(df_claimbuster, on='claim')
+	print(mean_squared_error(df.validity_x, df.validity_y, squared=False))
+	
 
 def KDEs():
 	df_enhanced = pd.read_csv(sciclops_dir+'etc/evaluation/enhanced_context.csv')
