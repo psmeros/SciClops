@@ -8,12 +8,14 @@ import pandas as pd
 import seaborn as sns
 import spacy
 from sklearn.metrics import mean_squared_error
+import random
 
 ############################### CONSTANTS ###############################
-
 sciclops_dir = str(Path.home()) + '/data/sciclops/' 
 hn_vocabulary = set(map(str.lower, open(sciclops_dir + 'etc/hn_vocabulary/hn_vocabulary.txt').read().splitlines()))
 health = set(map(str.lower, open(sciclops_dir + 'etc/hn_vocabulary/health.txt').read().splitlines()))
+
+random.seed(42)
 
 NUM_CLUSTERS = 10
 LAMBDA = 0.3
@@ -21,39 +23,38 @@ LAMBDA = 0.3
 
 
 def worktime():
-	print(pd.read_csv(sciclops_dir+'etc/evaluation/enhanced_context.csv').WorkTimeInSeconds.median())
-	print(pd.read_csv(sciclops_dir+'etc/evaluation/original_context.csv').WorkTimeInSeconds.median())
-	print(pd.read_csv(sciclops_dir+'etc/evaluation/no_context.csv').WorkTimeInSeconds.median())
-
-worktime()
+	print(pd.read_csv(sciclops_dir+'evaluation/enhanced_context.csv').WorkTimeInSeconds.median())
+	print(pd.read_csv(sciclops_dir+'evaluation/original_context.csv').WorkTimeInSeconds.median())
+	print(pd.read_csv(sciclops_dir+'evaluation/no_context.csv').WorkTimeInSeconds.median())
 
 def RMSE():
-	df_claimbuster = pd.read_csv(sciclops_dir+'etc/evaluation/claimbuster.csv').rename(columns={'Scientific Claim': 'claim', 'fact_check': 'validity'}).drop('URL', axis=1)
+	df_claimbuster = pd.read_csv(sciclops_dir+'evaluation/claimbuster.csv').rename(columns={'Scientific Claim': 'claim', 'fact_check': 'validity'}).drop('URL', axis=1)
+	df_google = pd.read_csv(sciclops_dir+'evaluation/google.csv').rename(columns={'Scientific Claim': 'claim', 'fact_check': 'validity'}).drop('URL', axis=1).fillna(random.randint(-2, 2))
 	
-	df_enhanced = pd.read_csv(sciclops_dir+'etc/evaluation/enhanced_context.csv')
+	df_enhanced = pd.read_csv(sciclops_dir+'evaluation/enhanced_context.csv')
 	df_enhanced['claim'] = df_enhanced['Input.main_claim']
 	df_enhanced ['validity'] = 0 * df_enhanced['Answer.ValidityNA.ValidityNA'] + (-2) * df_enhanced['Answer.Validity-2.Validity-2'] + (-1) * df_enhanced['Answer.Validity-1.Validity-1'] + 0 * df_enhanced['Answer.Validity0.Validity0'] + 1 * df_enhanced['Answer.Validity+1.Validity+1'] + 2 * df_enhanced['Answer.Validity+2.Validity+2']
 	df_enhanced = df_enhanced[['claim', 'validity']]
 	df_enhanced = df_enhanced.groupby('claim').mean().reset_index()
 
-	df_original = pd.read_csv(sciclops_dir+'etc/evaluation/original_context.csv')
+	df_original = pd.read_csv(sciclops_dir+'evaluation/original_context.csv')
 	df_original['claim'] = df_original['Input.main_claim']
 	df_original ['validity'] = 0 * df_original['Answer.ValidityNA.ValidityNA'] + (-2) * df_original['Answer.Validity-2.Validity-2'] + (-1) * df_original['Answer.Validity-1.Validity-1'] + 0 * df_original['Answer.Validity0.Validity0'] + 1 * df_original['Answer.Validity+1.Validity+1'] + 2 * df_original['Answer.Validity+2.Validity+2']
 	df_original = df_original[['claim', 'validity']]
 	df_original = df_original.groupby('claim').mean().reset_index()
 
-	df_no = pd.read_csv(sciclops_dir+'etc/evaluation/no_context.csv')
+	df_no = pd.read_csv(sciclops_dir+'evaluation/no_context.csv')
 	df_no['claim'] = df_no['Input.main_claim']
 	df_no ['validity'] = 0 * df_no['Answer.ValidityNA.ValidityNA'] + (-2) * df_no['Answer.Validity-2.Validity-2'] + (-1) * df_no['Answer.Validity-1.Validity-1'] + 0 * df_no['Answer.Validity0.Validity0'] + 1 * df_no['Answer.Validity+1.Validity+1'] + 2 * df_no['Answer.Validity+2.Validity+2']
 	df_no = df_no[['claim', 'validity']]
 	df_no = df_no.groupby('claim').mean().reset_index()
 
-	df_sylvia = pd.read_csv(sciclops_dir+'etc/evaluation/sylvia.csv')
+	df_sylvia = pd.read_csv(sciclops_dir+'evaluation/expert_1.csv')
 	df_sylvia['claim'] = df_sylvia['Scientific Claim']
 	df_sylvia['validity'] = df_sylvia['Validity [-2,+2]']
 	df_sylvia = df_sylvia[['claim', 'validity']]
 
-	df_dimitra = pd.read_csv(sciclops_dir+'etc/evaluation/dimitra.csv')
+	df_dimitra = pd.read_csv(sciclops_dir+'evaluation/expert_2.csv')
 	df_dimitra['claim'] = df_dimitra['Scientific Claim']
 	df_dimitra['validity'] = df_dimitra['Validity [-2,+2]']
 	df_dimitra = df_dimitra[['claim', 'validity']]
@@ -75,24 +76,27 @@ def RMSE():
 
 	df = df_experts.merge(df_claimbuster, on='claim')
 	print(mean_squared_error(df.validity_x, df.validity_y, squared=False))
-	
+
+	df = df_experts.merge(df_google, on='claim')
+	print(mean_squared_error(df.validity_x, df.validity_y, squared=False))
+
 
 def KDEs():
-	df_enhanced = pd.read_csv(sciclops_dir+'etc/evaluation/enhanced_context.csv')
+	df_enhanced = pd.read_csv(sciclops_dir+'evaluation/enhanced_context.csv')
 	df_enhanced['claim'] = df_enhanced['Input.main_claim']
 	df_enhanced['confidence'] = 1 * df_enhanced['Answer.Confidence1.Confidence1'] + 2 * df_enhanced['Answer.Confidence2.Confidence2'] + 3 * df_enhanced['Answer.Confidence3.Confidence3'] + 4 * df_enhanced['Answer.Confidence4.Confidence4'] + 5 * df_enhanced['Answer.Confidence5.Confidence5']
 	df_enhanced['effort'] = 0 * df_enhanced['Answer.Effort0.Effort0'] + 1 * df_enhanced['Answer.Effort1.Effort1'] + 2 * df_enhanced['Answer.Effort2.Effort2'] + 3 * df_enhanced['Answer.Effort3.Effort3'] + 4 * df_enhanced['Answer.Effort4.Effort4'] + 5 * df_enhanced['Answer.Effort5.Effort5']
 	df_enhanced ['validity'] = 0 * df_enhanced['Answer.ValidityNA.ValidityNA'] + (-2) * df_enhanced['Answer.Validity-2.Validity-2'] + (-1) * df_enhanced['Answer.Validity-1.Validity-1'] + 0 * df_enhanced['Answer.Validity0.Validity0'] + 1 * df_enhanced['Answer.Validity+1.Validity+1'] + 2 * df_enhanced['Answer.Validity+2.Validity+2']
 	df_enhanced = df_enhanced[['claim', 'confidence', 'effort', 'validity']]
 
-	df_original = pd.read_csv(sciclops_dir+'etc/evaluation/original_context.csv')
+	df_original = pd.read_csv(sciclops_dir+'evaluation/original_context.csv')
 	df_original['claim'] = df_original['Input.main_claim']
 	df_original['confidence'] = 1 * df_original['Answer.Confidence1.Confidence1'] + 2 * df_original['Answer.Confidence2.Confidence2']+ 3 * df_original['Answer.Confidence3.Confidence3']
 	df_original['effort'] = 0 * df_original['Answer.Effort0.Effort0'] + 1 * df_original['Answer.Effort1.Effort1'] + 2 * df_original['Answer.Effort2.Effort2'] + 3 * df_original['Answer.Effort3.Effort3'] 
 	df_original ['validity'] = 0 * df_original['Answer.ValidityNA.ValidityNA'] + (-2) * df_original['Answer.Validity-2.Validity-2'] + (-1) * df_original['Answer.Validity-1.Validity-1'] + 0 * df_original['Answer.Validity0.Validity0'] + 1 * df_original['Answer.Validity+1.Validity+1'] + 2 * df_original['Answer.Validity+2.Validity+2']
 	df_original = df_original[['claim', 'confidence', 'effort', 'validity']]
 
-	df_no = pd.read_csv(sciclops_dir+'etc/evaluation/no_context.csv')
+	df_no = pd.read_csv(sciclops_dir+'evaluation/no_context.csv')
 	df_no['claim'] = df_no['Input.main_claim']
 	df_no['confidence'] = 1 * df_no['Answer.Confidence1.Confidence1'] + 2 * df_no['Answer.Confidence2.Confidence2']+ 3 * df_no['Answer.Confidence3.Confidence3']
 	df_no['effort'] = 0 * df_no['Answer.Effort0.Effort0'] + 1 * df_no['Answer.Effort1.Effort1'] + 2 * df_no['Answer.Effort2.Effort2'] + 3 * df_no['Answer.Effort3.Effort3'] 
@@ -103,12 +107,12 @@ def KDEs():
 	sns.set_palette('colorblind')
 	fig, (ax0, ax1) = plt.subplots(nrows=1, ncols=2, figsize=(25,10))
 	for ind, ax in zip(['confidence', 'effort'], [ax0, ax1]):
-		for df, l, c in zip([df_no, df_original, df_enhanced], ['Without', 'With Original', 'With Enhanced'], ['#2DA8D8FF', '#2A2B2DFF', '#D9514EFF']):
+		for df, l, c in zip([df_no, df_original, df_enhanced], ['Without', 'With Partial', 'With Enhanced'], ['#2DA8D8FF', '#2A2B2DFF', '#D9514EFF']):
 			#df = df.sort_values(by='confidence')[:int(.3*len(df))]
 			ax = sns.kdeplot(df.groupby('claim').mean()[ind], label=l+' Context', color=c, shade= True, ax=ax)
 			ax.set(ylim=(0, .9))	
 			ax.set_xlabel(ind.capitalize(), fontsize='xx-large')
-			ax.get_legend().remove()
+			# ax.get_legend().remove()
 			ax.set_xticks([0,2,4])
 			ax.set_xticklabels(['Low', 'Medium', 'High'], fontsize='x-large')
 
@@ -117,14 +121,14 @@ def KDEs():
 	ax1.get_yaxis().set_visible(False)
 
 	lines, labels = ax1.get_legend_handles_labels()    
-	legend = fig.legend(lines, labels, loc = 'upper right', ncol=1, bbox_to_anchor=(.83, .89), frameon=False, fontsize='xx-large')
-	
+	legend = fig.legend(lines, labels, title='Non-Experts', loc = 'upper right', ncol=1, bbox_to_anchor=(.93, .93), frameon=False, fontsize='xx-large', title_fontsize='xx-large')
+
 	for handle in legend.legendHandles:
-		handle.set_linewidth('7.0')	
+		handle.set_linewidth('2.0')	
 
 	sns.despine(left=True, bottom=True)
 	plt.show()
-	fig.savefig(sciclops_dir+'etc/evaluation/KDEs.pdf', bbox_inches='tight')
+	fig.savefig(sciclops_dir+'evaluation/KDEs.pdf', bbox_inches='tight')
 
 def prepare_claims():
 	claimsKG = pd.read_csv(sciclops_dir+'etc/claimKG/claims.csv')
@@ -167,13 +171,13 @@ def prepare_claims():
 	claims_enhanced_context = pd.DataFrame(claims_enhanced_context)
 
 	claims_enhanced_context = claims_enhanced_context.drop_duplicates(subset=1)
-	claims_enhanced_context.to_csv(sciclops_dir + 'etc/evaluation/claims_enhanced_context_v1.csv', index=False)
+	claims_enhanced_context.to_csv(sciclops_dir + 'evaluation/claims_enhanced_context_v1.csv', index=False)
 
 def microtask_preparation():
 	max_related = 3
 	nlp = spacy.load('en_core_web_lg')
 
-	df = pd.read_csv(sciclops_dir + 'etc/evaluation/claims_enhanced_context_v1.csv')
+	df = pd.read_csv(sciclops_dir + 'evaluation/claims_enhanced_context_v1.csv')
 
 	def find_most_similar(claim, related, pos):
 		related = eval(related)
@@ -198,7 +202,7 @@ def microtask_preparation():
 
 	df = df.drop([str(i) for i in range(6)], axis=1)
 
-	df.to_csv(sciclops_dir + 'etc/evaluation/claims_enhanced_context_v2.csv', index=False)
+	df.to_csv(sciclops_dir + 'evaluation/claims_enhanced_context_v2.csv', index=False)
 
 
 #Query for https://data.gesis.org/claimskg/sparql
