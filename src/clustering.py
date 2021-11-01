@@ -1,25 +1,28 @@
 from collections import Counter
 from pathlib import Path
 
+import networkx as nx
 import numpy as np
 import pandas as pd
 import spacy
 import torch
 import torch.nn as nn
+from gsdmm import MovieGroupProcess
+from pandarallel import pandarallel
 from sklearn.cluster import KMeans
-from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.decomposition import LatentDirichletAllocation, TruncatedSVD
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.mixture import GaussianMixture
+from sklearn.preprocessing import MultiLabelBinarizer
 from spacy.lang.en.stop_words import STOP_WORDS
 from torch import optim
-
-from gsdmm import MovieGroupProcess
 
 ############################### CONSTANTS ###############################
 scilens_dir = str(Path.home()) + '/data/scilens/cache/diffusion_graph/scilens_3M/'
 sciclops_dir = str(Path.home()) + '/data/sciclops/'
 hn_vocabulary = set(map(str.lower, open(sciclops_dir + 'etc/hn_vocabulary/hn_vocabulary.txt').read().splitlines()))
 
+CLAIM_THRESHOLD = 10
 nlp = spacy.load('en_core_web_lg')
 for word in STOP_WORDS:
     for w in (word, word[0].capitalize(), word.upper()):
@@ -39,12 +42,125 @@ gamma = 1.e-3
 ############################### ######### ###############################
 
 ################################ HELPERS ################################
+#Read diffusion graph
+def read_graph(graph_file):
+	return nx.from_pandas_edgelist(pd.read_csv(graph_file, sep='\t', header=None), 0, 1, create_using=nx.DiGraph())
+
+#Remove stopwords/Lemmatize
+def clean_claim(text):
+	if (not text.endswith('.')) or ('\n' in text):
+		text = []
+	else:
+		text = [str(w.lemma_) for w in nlp(text) if not (w.is_stop or len(w) == 1)]
+
+		#remove small claims
+		if len(text) < CLAIM_THRESHOLD:
+			text = []
+		else:
+			text = [w for w in hn_vocabulary if w in text]
+	return text
+
+#Remove stopwords/Lemmatize
+def clean_paper(text):
+	text = [str(w.lemma_) for w in nlp(str(text)) if not (w.is_stop or len(w) == 1)]
+	text = [w for w in hn_vocabulary if w in text]
+	return text
+
+def matrix_preparation(representations, pca_dimensions=None):
+	pandarallel.initialize(verbose=0)
+	
+	claims = pd.read_csv(sciclops_dir+'cache/claims_raw.tsv.bz2', sep='\t')
+
+	G = read_graph(scilens_dir + 'diffusion_graph_v7.tsv.bz2')
+	G.remove_nodes_from(open(sciclops_dir + 'small_files/blacklist/sources.txt').read().splitlines())
+	
+	papers = pd.read_csv(scilens_dir + 'paper_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url')
+
+	print('cleaning papers...')
+	#papers['clean_passage'] = papers.title + ' ' + papers.full_text.parallel_apply(lambda w: w.split('\n')[0])
+	#papers['clean_passage'] = clean_paper(papers['clean_passage'])
+	papers['clean_passage'] = papers.title.parallel_apply(clean_paper)
+	papers = papers[papers['clean_passage'].str.len() != 0]
+	papers['popularity'] = papers.url.parallel_apply(lambda u: G.in_degree(u))
+	refs = set(papers['url'].unique())
+
+	print('cleaning claims...')	
+	claims['refs'] = claims.url.parallel_apply(lambda u: set(G.successors(u)).intersection(refs))
+	claims = claims[claims['refs'].str.len() != 0]
+
+	tweets = pd.read_csv(scilens_dir + 'tweet_details_v1.tsv.bz2', sep='\t').drop_duplicates(subset='url').set_index('url')
+	claims['popularity'] = claims.url.parallel_apply(lambda u: sum([tweets.loc[t]['popularity'] for t in G.predecessors(u) if t in tweets.index]))
+
+	claims.claim = claims.claim.apply(eval)
+	claims = claims.explode('claim')
+
+	claims['clean_claim'] = claims['claim'].parallel_apply(clean_claim)
+	claims = claims[claims['clean_claim'].str.len() != 0]
+	refs = set([e for l in claims['refs'].to_list() for e in l])
+	papers = papers[papers['url'].isin(refs)]
+
+	papers = papers.set_index(['url', 'title', 'popularity'])
+	claims = claims.set_index(['url', 'claim', 'popularity'])
+	papers_index = papers.index
+	claims_index = claims.index
+
+	mlb = MultiLabelBinarizer()
+	cooc = pd.DataFrame(mlb.fit_transform(claims.refs), columns=mlb.classes_, index=claims.index)
+	cooc.to_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t')
+
+	for representation in representations:
+		print('transforming...')
+		if representation =='textual':
+			papers_vec = papers['clean_passage'].parallel_apply(lambda x: ' '.join(x))
+			claims_vec = claims['clean_claim'].parallel_apply(lambda x: ' '.join(x))
+
+		elif representation =='embeddings':
+			papers_vec = papers['clean_passage'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
+			claims_vec = claims['clean_claim'].parallel_apply(lambda x: nlp(' '.join(x)).vector).apply(pd.Series).values
+
+		print('caching...')
+		if representation == 'embeddings' and pca_dimensions != None:
+			for dimension in pca_dimensions:
+				pca = TruncatedSVD(dimension).fit(claims_vec).fit(papers_vec)
+				pd.DataFrame(pca.transform(papers_vec), index=papers_index).to_csv(sciclops_dir + 'cache/papers_'+representation+'_'+str(dimension)+'.tsv.bz2', sep='\t')
+				pd.DataFrame(pca.transform(claims_vec), index=claims_index).to_csv(sciclops_dir + 'cache/claims_'+representation+'_'+str(dimension)+'.tsv.bz2', sep='\t')	
+
+		pd.DataFrame(papers_vec, index=papers_index).to_csv(sciclops_dir + 'cache/papers_'+representation+'.tsv.bz2', sep='\t')
+		pd.DataFrame(claims_vec, index=claims_index).to_csv(sciclops_dir + 'cache/claims_'+representation+'.tsv.bz2', sep='\t')	
 
 def load_matrices(representation, dimension=None):
+	matrix_preparation(representations=['textual','embeddings'], pca_dimensions=[10])
 	cooc = pd.read_csv(sciclops_dir + 'cache/cooc.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
 	claims = pd.read_csv(sciclops_dir + 'cache/claims_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col=['url', 'claim', 'popularity'])
 	papers = pd.read_csv(sciclops_dir + 'cache/papers_'+representation+('_'+str(dimension) if dimension else '')+'.tsv.bz2', sep='\t', index_col=['url', 'title', 'popularity'])
 	return cooc, papers, claims
+
+def popular_clusters():
+  NUM_CLUSTERS = 100 
+  claims_clusters = pd.read_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
+  papers_clusters = pd.read_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t')
+  
+  claims_popularity = claims_clusters['popularity']
+  papers_popularity = papers_clusters['popularity']
+  
+  claims_rank = [sum(claims_clusters[str(i)]*claims_popularity) for i in range(NUM_CLUSTERS)]
+  claims_rank = [r/sum(claims_rank) for r in claims_rank]
+  papers_rank = [sum(papers_clusters[str(i)]*papers_popularity) for i in range(NUM_CLUSTERS)]
+  papers_rank = [r/sum(papers_rank) for r in papers_rank]
+
+  rank = np.flip(np.argsort(np.array(claims_rank) + np.array(papers_rank)))
+
+  for c in range(NUM_CLUSTERS):
+    print('cluster: ', c)
+    claims_centroid = claims_clusters.iloc[claims_clusters[str(c)].argmax()]['claim'].lower()
+    print(claims_centroid)
+    claims_centroid = set(claims_centroid.split()).intersection(hn_vocabulary)
+    
+    papers_centroid = papers_clusters.iloc[papers_clusters[str(c)].argmax()]['title'].lower()
+    print(papers_centroid)
+    papers_centroid = set(papers_centroid.split()).intersection(hn_vocabulary)
+
+    print(claims_centroid.union(papers_centroid))
 
 def standalone_clustering(method):
 	dimension = 10 if method.startswith('PCA') else None
@@ -448,21 +564,25 @@ def eval_clusters(papers_clusters, claims_clusters, cooc):
 	
 
 if __name__ == "__main__":
-	compare = False
-	if compare:
-		clustering_types = ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans', 'compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C', 'coordinate-align', 'coordinate-transform', 'compute-align-0.1', 'compute-align-0.5', 'compute-align-0.9']
-		results = []
-		for NUM_CLUSTERS in [10, 20, 50, 100]:
-			for clustering_type in clustering_types:
-				papers_clusters, claims_clusters, cooc = compute_clusterings(clustering_type, 'GMM')
-				p, asw = eval_clusters(papers_clusters, claims_clusters, cooc)
-				results += [[NUM_CLUSTERS, clustering_type, p, asw]]
-			print(results)
+	clustering_types = ['LDA', 'GSDMM', 'GMM', 'PCA-GMM', 'KMeans', 'PCA-KMeans', 'compute_C_transform_P', 'compute_C_align_P', 'compute_P_transform_C', 'compute_P_align_C', 'coordinate-align', 'coordinate-transform', 'compute-align-0.1', 'compute-align-0.5', 'compute-align-0.9']
+	results = []
+	for NUM_CLUSTERS in [10, 20, 50, 100]:
+		for clustering_type in clustering_types:
+			papers_clusters, claims_clusters, cooc = compute_clusterings(clustering_type, 'GMM')
+			p, asw = eval_clusters(papers_clusters, claims_clusters, cooc)
+			results += [[NUM_CLUSTERS, clustering_type, p, asw]]
+		print(results)
 		
-		pd.DataFrame(results, columns=['clusters', 'method', 'P@3', 'ASW']).to_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t', index=None)
+	pd.DataFrame(results, columns=['clusters', 'method', 'P@3', 'ASW']).to_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t', index=None)
 
-	else:
-		NUM_CLUSTERS = 100
-		papers_clusters, claims_clusters, _ = compute_clusterings('compute-align-0.5', 'GMM')
-		papers_clusters.to_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t')
-		claims_clusters.to_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
+	df = pd.read_csv(sciclops_dir + 'cache/clustering_results.tsv', sep='\t')
+	mapping = {'LDA':'LDA', 'GSDMM':'GSDMM', 'GMM':'GMM', 'PCA-GMM':'PCA/GMM', 'KMeans':'K-Means', 'PCA-KMeans':'PCA/K-Means', 'coordinate-align':'GBA-CP', 'compute_P_align_C':'GBA-C', 'compute_C_align_P':'GBA-P', 'coordinate-transform':'GBT-CP', 'compute_P_transform_C':'GBT-C', 'compute_C_transform_P':'GBT-P', 'compute-align-0.1':'AO-Content', 'compute-align-0.5':'AO-Balanced', 'compute-align-0.9':'AO-Graph'}
+	df.method = df.method.apply(lambda x: mapping[x])
+
+	df = df.pivot(index='method', columns='clusters', values=['ASW', 'P@3']).reindex(mapping.values()).swaplevel(axis=1).sort_index(axis=1, level=0, sort_remaining=False).applymap(lambda x:'{0:04.1f}%'.format(100 * x))#.round(decimals=3) * 100
+	print(df.to_latex())
+	
+	NUM_CLUSTERS = 100
+	papers_clusters, claims_clusters, _ = compute_clusterings('compute-align-0.5', 'GMM')
+	papers_clusters.to_csv(sciclops_dir + 'cache/papers_clusters.tsv.bz2', sep='\t')
+	claims_clusters.to_csv(sciclops_dir + 'cache/claims_clusters.tsv.bz2', sep='\t')
